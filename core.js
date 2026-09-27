@@ -1,3 +1,5 @@
+import { createRequestCheck } from './request-check.js';
+
 export const SETTINGS_KEY = 'fixed_prompt_extension';
 export const PROMPT_KEY = 'fixed_prompt_extension_prompt';
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -29,8 +31,9 @@ export function promptForGeneration(settings, type = 'normal') {
 }
 
 /** Uses SillyTavern's own prompt store; never edits or appends chat messages. */
-export function createController(getContext) {
+export function createController(getContext, onReportChange = () => {}) {
     let currentType = 'normal';
+    const requestCheck = createRequestCheck(getContext, settings, onReportChange);
 
     function settings() {
         return normalizeSettings(getContext()?.extensionSettings?.[SETTINGS_KEY]);
@@ -54,6 +57,7 @@ export function createController(getContext) {
         ctx.extensionSettings[SETTINGS_KEY] = next;
         sync();
         ctx.saveSettingsDebounced();
+        requestCheck.reset(false);
         return next;
     }
 
@@ -62,7 +66,8 @@ export function createController(getContext) {
         ctx?.setExtensionPrompt?.(PROMPT_KEY, '', 1, 0, false, 0);
         // Removing our own entry also releases any future filter or metadata.
         if (ctx?.extensionPrompts) delete ctx.extensionPrompts[PROMPT_KEY];
+        requestCheck.reset();
     }
 
-    return { settings, sync, update, clear };
+    return { settings, sync, update, clear, requestCheck };
 }

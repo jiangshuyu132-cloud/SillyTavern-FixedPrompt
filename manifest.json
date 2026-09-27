@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "jiangshuyu132-cloud",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "homePage": "https://github.com/jiangshuyu132-cloud/SillyTavern-FixedPrompt",
     "generate_interceptor": "sillytavernFixedPromptInterceptor",
     "hooks": {

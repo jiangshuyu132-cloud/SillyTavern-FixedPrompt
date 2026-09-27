@@ -3,7 +3,7 @@ import { mountPanel } from './panel.js';
 
 const INTERCEPTOR = 'sillytavernFixedPromptInterceptor';
 const context = () => globalThis.SillyTavern?.getContext?.();
-const controller = createController(context);
+const controller = createController(context, () => panel?.renderStatus());
 let initialized = false;
 let listeners = [];
 let panel = null;
@@ -23,10 +23,23 @@ export function init() {
         throw new Error('固定提示词：无法读取酒馆扩展接口，请更新酒馆后重试。');
     }
     panel = mountPanel(controller);
+    const verifyRequest = data => controller.requestCheck.verify(data);
     // The event covers prompt previews too; the interceptor refreshes before assembly.
-    subscribe(ctx, 'GENERATION_AFTER_COMMANDS', (type) => controller.sync(type));
+    subscribe(ctx, 'GENERATION_AFTER_COMMANDS', (type, _options, dryRun) => {
+        controller.sync(type);
+        controller.requestCheck.begin(type, dryRun);
+        const requestEvent = ctx.eventTypes.CHAT_COMPLETION_SETTINGS_READY;
+        // Reorder before emission so extensions loaded after us prepare their payload first.
+        if (requestEvent && typeof ctx.eventSource.makeLast === 'function') {
+            ctx.eventSource.makeLast(requestEvent, verifyRequest);
+        }
+    });
+    subscribe(ctx, 'CHAT_COMPLETION_SETTINGS_READY', verifyRequest);
+    subscribe(ctx, 'GENERATION_ENDED', () => controller.requestCheck.end());
+    subscribe(ctx, 'GENERATION_STOPPED', () => controller.requestCheck.end(true));
     subscribe(ctx, 'CHAT_CHANGED', () => {
         controller.sync('normal');
+        controller.requestCheck.reset();
         panel?.refresh();
     });
     globalThis[INTERCEPTOR] = (_chat, _contextSize, _abort, type) => controller.sync(type);

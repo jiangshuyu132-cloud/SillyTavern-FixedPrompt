@@ -32,6 +32,10 @@ export function mountPanel(controller) {
                     <div class="divider"></div>
                     <p class="help">写一次，每次聊天自动带给 AI。应用于当前酒馆账号的所有聊天；不会作为消息显示在聊天窗口。支持 {{user}} 和 {{char}}。</p>
                     <p class="help">普通发送、重新生成、滑动回复和继续回复都会携带。后台静默任务和 AI 代写用户消息不携带。</p>
+                    <div class="divider"></div>
+                    <b class="field">发送检查 · v1.1.1</b>
+                    <p class="help" data-check-summary></p>
+                    <p class="help" data-check-detail></p>
                 </div></section>
             </div><canvas aria-hidden="true"></canvas></div></div>
         </div>`;
@@ -46,10 +50,13 @@ export function mountPanel(controller) {
     function renderStatus() {
         const settings = controller.settings();
         const ready = settings.enabled && settings.text.trim().length > 0;
+        const check = controller.requestCheck.report();
         const status = q('[data-status]');
         status.textContent = !settings.enabled ? '已暂停 · 保留提示词，下次启用即可继续'
-            : ready ? '已启用 · 下一次聊天生成将自动携带' : '等待填写 · 输入固定提示词后自动生效';
+            : ready ? check.summary : '等待填写 · 输入固定提示词后自动生效';
         status.dataset.active = String(ready);
+        q('[data-check-summary]').textContent = status.textContent;
+        q('[data-check-detail]').textContent = check.detail;
         q('[data-count]').textContent = `${Array.from(settings.text).length} 字符`;
     }
 
@@ -120,7 +127,7 @@ export function mountPanel(controller) {
     settingsHost?.append(shortcut);
     refresh();
 
-    return { refresh() { refresh(); scheduleLayout(); }, open: animation.open, destroy() {
+    return { renderStatus, refresh() { refresh(); scheduleLayout(); }, open: animation.open, destroy() {
         animation.destroy();
         positionObserver.disconnect();
         cancelAnimationFrame(layoutFrame);

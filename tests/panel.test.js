@@ -67,12 +67,17 @@ function fixture({ reduced = false, canvasAvailable = true, saved } = {}) {
     const context = {
         extensionSettings: { [SETTINGS_KEY]: saved ?? { text: '原来保存的 {{char}} 规则', enabled: true, depth: 3, role: 1 } },
         extensionPrompts: { unrelated: { value: 'keep' } },
-        eventTypes: { GENERATION_AFTER_COMMANDS: 'generate', CHAT_CHANGED: 'chat' },
+        eventTypes: { GENERATION_AFTER_COMMANDS: 'generate', CHAT_CHANGED: 'chat',
+            CHAT_COMPLETION_SETTINGS_READY: 'request', GENERATION_ENDED: 'ended', GENERATION_STOPPED: 'stopped' },
         eventSource: new EventEmitter(),
         setExtensionPrompt(key, value, position, depth, scan, role) {
             this.extensionPrompts[key] = { value, position, depth, scan, role };
         },
         saveSettingsDebounced() { saves++; },
+    };
+    context.eventSource.makeLast = function (name, handler) {
+        this.removeListener(name, handler);
+        this.on(name, handler);
     };
     globalThis.SillyTavern = { getContext: () => context };
     plugin.init();
@@ -223,6 +228,9 @@ test('cleanup removes all owned events, observers and frames; reinit keeps saved
     assert.equal(env.document.getElementById('fixed_prompt_extension_shortcut'), null);
     assert.equal(env.context.eventSource.listenerCount('chat'), 0);
     assert.equal(env.context.eventSource.listenerCount('generate'), 0);
+    assert.equal(env.context.eventSource.listenerCount('request'), 0);
+    assert.equal(env.context.eventSource.listenerCount('ended'), 0);
+    assert.equal(env.context.eventSource.listenerCount('stopped'), 0);
     assert.equal(globalThis.sillytavernFixedPromptInterceptor, undefined);
     assert.equal(env.context.extensionPrompts[PROMPT_KEY], undefined);
     assert.equal(env.context.extensionPrompts.unrelated.value, 'keep');
@@ -252,4 +260,63 @@ test('switching reduced motion on while animating completes the active transitio
     env.media.dispatchEvent(new env.window.Event('change'));
     assert.equal(env.q('.square').inert, false);
     assert.equal(env.frames.size, 0);
+});
+
+test('actual registered pre-send event repairs a nested-generation omission and updates visible diagnostics', () => {
+    env.change('text', '请用简体中文回复。');
+    env.change('depth', '0');
+    const events = env.context.eventSource;
+    events.emit('generate', 'normal', {}, false);
+    events.emit('generate', 'quiet', {}, false);
+    assert.equal(env.context.extensionPrompts[PROMPT_KEY].value, '');
+    const quiet = { type: 'quiet', messages: [{ role: 'user', content: '后台测试' }] };
+    events.emit('request', quiet);
+    events.emit('ended');
+    const foreground = { type: 'normal', messages: [{ role: 'user', content: '你好' }] };
+    events.emit('request', foreground);
+    assert.equal(quiet.messages.length, 1);
+    assert.equal(foreground.messages.at(-1).content, '请用简体中文回复。');
+    assert.match(env.q('[data-status]').textContent, /已补回/);
+    assert.match(env.q('[data-check-summary]').textContent, /待发送请求/);
+    assert.match(env.q('[data-check-detail]').textContent, /所选身份/);
+    events.emit('request', foreground);
+    assert.equal(foreground.messages.length, 2);
+    env.change('text', '新的设置');
+    assert.match(env.q('[data-status]').textContent, /等待下一次发送检查/);
+});
+
+test('finding the prompt reports verification, while a stopped generation never claims it was sent', () => {
+    env.change('text', '请用简体中文回复。');
+    const events = env.context.eventSource;
+    events.emit('generate', 'normal', {}, false);
+    const request = { type: 'normal', messages: [{ role: 'system', content: '请用简体中文回复。' }] };
+    events.emit('request', request);
+    assert.match(env.q('[data-status]').textContent, /已找到提示词/);
+    assert.equal(request.messages.length, 1);
+    events.emit('generate', 'normal', {}, false);
+    events.emit('stopped');
+    assert.match(env.q('[data-status]').textContent, /未核验/);
+    plugin.cleanup();
+    const later = { type: 'normal', messages: [] };
+    events.emit('request', later);
+    assert.equal(later.messages.length, 0);
+});
+
+test('verification runs after a later-loaded request editor without duplicate listeners', () => {
+    env.change('text', '请用简体中文回复。');
+    env.change('depth', '0');
+    const events = env.context.eventSource;
+    const editor = data => { data.messages = [{ role: 'user', content: '其他扩展组装的消息' }]; };
+    events.on('request', editor);
+    for (let i = 0; i < 2; i++) {
+        events.emit('generate', 'normal', {}, false);
+        const data = { type: 'normal', messages: [{ role: 'system', content: '请用简体中文回复。' }] };
+        events.emit('request', data);
+        assert.equal(data.messages.length, 2);
+        assert.equal(data.messages[0].content, '其他扩展组装的消息');
+        assert.equal(data.messages[1].content, '请用简体中文回复。');
+        assert.equal(events.listenerCount('request'), 2);
+    }
+    plugin.cleanup();
+    assert.equal(events.listenerCount('request'), 1);
 });
