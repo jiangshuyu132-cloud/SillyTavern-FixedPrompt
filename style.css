@@ -98,6 +98,11 @@
 #square-prompt-particles .field.depth{margin-top:17px}
 #square-prompt-particles .help{font-size:13px;line-height:1.8;color:#a69c85;margin:9px 0 0}
 #square-prompt-particles .divider{height:1px;background:#2b2721;margin:18px 0 12px}
+#square-prompt-particles textarea.preview{display:block;flex:none;height:160px;min-height:120px;margin-top:12px;resize:vertical;font-size:14px}
+#square-prompt-particles .copy-row{display:flex;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap}
+#square-prompt-particles .copy-row .help{margin:0}
+#square-prompt-particles .copy-button{padding:7px 15px;border:1px solid #79613d;border-radius:5px;background:#2b251b;color:#dfbc72}
+#square-prompt-particles .copy-button:disabled{opacity:.45;cursor:default}
 #square-prompt-particles canvas{position:absolute;inset:0;width:100%;height:100%;z-index:4;pointer-events:none}
 #square-prompt-particles button:focus-visible{outline:2px solid #dfbc72;outline-offset:2px}
 @container(max-width:420px){#square-prompt-particles .square{padding:12px;gap:5px}

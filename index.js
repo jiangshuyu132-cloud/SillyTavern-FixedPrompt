@@ -18,16 +18,16 @@ function subscribe(ctx, key, handler) {
 export function init() {
     if (initialized) return;
     const ctx = context();
-    if (!ctx?.extensionSettings || !ctx?.setExtensionPrompt || !ctx?.saveSettingsDebounced
+    if (!ctx?.extensionSettings || !ctx?.saveSettingsDebounced
         || !ctx?.eventSource || !ctx?.eventTypes) {
         throw new Error('固定提示词：无法读取酒馆扩展接口，请更新酒馆后重试。');
     }
     panel = mountPanel(controller);
-    const verifyRequest = data => controller.requestCheck.verify(data);
-    // The event covers prompt previews too; the interceptor refreshes before assembly.
+    const verifyRequest = data => controller.delivery.verifyChat(data);
+    const verifyText = (data, dryRun) => controller.delivery.verifyText(data, dryRun);
     subscribe(ctx, 'GENERATION_AFTER_COMMANDS', (type, _options, dryRun) => {
-        controller.sync(type);
-        controller.requestCheck.begin(type, dryRun);
+        controller.clearLegacyPrompt();
+        controller.delivery.begin(type, dryRun);
         const requestEvent = ctx.eventTypes.CHAT_COMPLETION_SETTINGS_READY;
         // Reorder before emission so extensions loaded after us prepare their payload first.
         if (requestEvent && typeof ctx.eventSource.makeLast === 'function') {
@@ -35,15 +35,18 @@ export function init() {
         }
     });
     subscribe(ctx, 'CHAT_COMPLETION_SETTINGS_READY', verifyRequest);
-    subscribe(ctx, 'GENERATION_ENDED', () => controller.requestCheck.end());
-    subscribe(ctx, 'GENERATION_STOPPED', () => controller.requestCheck.end(true));
+    subscribe(ctx, 'GENERATE_AFTER_DATA', verifyText);
+    subscribe(ctx, 'GENERATION_ENDED', () => controller.delivery.end());
+    subscribe(ctx, 'GENERATION_STOPPED', () => controller.delivery.end(true));
     subscribe(ctx, 'CHAT_CHANGED', () => {
-        controller.sync('normal');
-        controller.requestCheck.reset();
+        controller.clear();
         panel?.refresh();
     });
-    globalThis[INTERCEPTOR] = (_chat, _contextSize, _abort, type) => controller.sync(type);
-    controller.sync('normal');
+    globalThis[INTERCEPTOR] = (chat, _contextSize, _abort, type) => {
+        controller.clearLegacyPrompt();
+        controller.delivery.intercept(chat, type);
+    };
+    controller.clearLegacyPrompt();
     initialized = true;
 }
 

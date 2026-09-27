@@ -8,90 +8,66 @@
     :root { color-scheme: dark; }
     body { margin: 20px; font: 16px/1.5 system-ui; color: #c1b8a2; background: #101113; }
     h1 { margin: 0; font-size: 20px; }
-    #result { margin: 8px 0; font-size: 13px; }
-    #chat { position: absolute; top: 150px; bottom: 72px; left: max(0px, calc((100% - 900px) / 2)); width: min(100%, 900px); box-sizing: border-box; padding: 32px; background: #171717; overflow: auto; border: 1px solid #302c25; }
-    #chat p { max-width: 720px; margin-bottom: 32px; }
+    #result, .instructions { font-size: 13px; }
+    #chat { position: absolute; top: 220px; bottom: 32px; left: max(0px, calc((100% - 900px) / 2)); width: min(100%, 900px); box-sizing: border-box; padding: 32px; background: #171717; overflow: auto; border: 1px solid #302c25; }
+    #chat p { max-width: 720px; margin-bottom: 24px; }
+    #wire { white-space: pre-wrap; overflow-wrap: anywhere; }
     #extensions_settings2 { display: none; }
-    .instructions { font-size: 13px; }
     textarea, button, select { background: red; color: lime; border-radius: 40px; }
-    /* Deliberately conflicting page controls above must not affect the shadow panel. */
+    /* Deliberately conflicting page controls must not affect the shadow panel. */
+    #send, #message { padding: 8px 12px; }
 </style>
 <h1>固定提示词 · 浏览器验证</h1>
-<p class="instructions">独立测试环境，不连接酒馆或模型服务。点击正文左侧金色长条，等待主面板展开，再点击「高级设置」。缩窄窗口可检查手机布局。</p>
-<p id="result" role="status">正在验证……</p>
+<p class="instructions">独立示例，不连接酒馆或模型服务。点击正文左侧金色长条查看动画，模拟发送后打开「高级设置」预览并复制。</p>
+<label>用户消息 <input id="message" value="带我去城门。"></label>
+<button id="send" type="button">模拟发送</button>
+<p id="result" role="status">正在加载……</p>
 <div id="extensions_settings2"></div>
 <main id="chat" aria-label="示例聊天">
-    <p>这是一段用于检查悬浮位置的示例聊天。</p>
-    <p>金色长条贴在正文左边。面板收起后，可以继续选中或点击这里的文字。</p>
-    <p>主面板通过金色粒子展开成正方形，高级设置继续向下展开。屏幕较小时，在面板内滚动即可看到全部设置。</p>
+    <p>这是一段用于检查悬浮位置的示例聊天。金色长条贴在正文左边。</p>
+    <p>主面板展开成正方形，高级设置继续向下展开。缩窄窗口可检查手机布局。</p>
+    <p>模拟请求：</p><pre id="wire">点击「模拟发送」查看组合后的请求。</pre>
 </main>
 <script type="module">
     const handlers = new Map();
-    let saves = 0;
+    const key = 'fixed_prompt_extension';
+    const result = document.getElementById('result');
     const state = {
-        extensionSettings: {},
-        extensionPrompts: {},
-        eventTypes: { GENERATION_AFTER_COMMANDS:'generation_after_commands', CHAT_CHANGED:'chat_changed' },
+        extensionSettings: { [key]: { enabled: true, text: '请用简体中文回复。', role: 0, depth: 0 } },
+        extensionPrompts: {}, chat: [],
+        name1: '旅人', name2: '向导', mainApi: 'openai',
+        eventTypes: { GENERATION_AFTER_COMMANDS: 'generate', CHAT_CHANGED: 'chat',
+            CHAT_COMPLETION_SETTINGS_READY: 'request', GENERATION_ENDED: 'ended',
+            GENERATION_STOPPED: 'stopped', GENERATE_AFTER_DATA: 'data' },
         eventSource: {
             on(name, handler) { if (!handlers.has(name)) handlers.set(name, new Set()); handlers.get(name).add(handler); },
             removeListener(name, handler) { handlers.get(name)?.delete(handler); },
+            makeLast(name, handler) { this.removeListener(name, handler); this.on(name, handler); },
         },
-        setExtensionPrompt(key, value, position, depth, scan, role) {
-            state.extensionPrompts[key] = { value, position, depth, scan, role };
-        },
-        saveSettingsDebounced() { saves++; },
+        saveSettingsDebounced() { result.textContent = '设置已保存到本示例的内存中。'; },
     };
-    globalThis.SillyTavern = { getContext: () => ({ ...state }) };
-    const result = document.querySelector('#result');
-    const q = selector => document.getElementById('fixed_prompt_extension_panel').shadowRoot.querySelector(selector);
-    let checks = 0;
-    function check(condition, message) { if (!condition) throw new Error(message); checks++; }
-    const key = 'fixed_prompt_extension_prompt';
-    const settingsKey = 'fixed_prompt_extension';
+    globalThis.SillyTavern = { getContext: () => state };
     const emit = (name, ...args) => { for (const handler of handlers.get(name) ?? []) handler(...args); };
-    const edit = (element, value, event = 'input') => { element.value = value; element.dispatchEvent(new Event(event, { bubbles:true })); };
     try {
         const extension = await import('../index.js');
         extension.init();
-        check(document.querySelectorAll('#fixed_prompt_extension_panel').length === 1, '重复挂载');
-        check([...handlers.values()].every(set => set.size === 1), '重复事件');
-        let input = q('[data-setting="text"]');
-        check(input.value === '' && state.extensionPrompts[key].value === '', '初始状态');
-        edit(input, '请用中文回答 {{user}}。\n保持 {{char}} 的设定。');
-        check(saves === 1 && state.extensionSettings[settingsKey].text === input.value, '自动保存');
-        emit('generation_after_commands', 'normal', {}, false);
-        check(state.extensionPrompts[key].value === input.value, '发送注入');
-        globalThis.sillytavernFixedPromptInterceptor([], 8192, () => {}, 'regenerate');
-        check(Object.keys(state.extensionPrompts).length === 1, '重复生成去重');
-        emit('generation_after_commands', 'quiet');
-        check(state.extensionPrompts[key].value === '', '静默排除');
-        emit('generation_after_commands', 'continue');
-        check(state.extensionPrompts[key].value === input.value, '继续回复');
-        const toggle = q('[data-setting="enabled"]');
-        toggle.checked = false; toggle.dispatchEvent(new Event('change'));
-        check(state.extensionPrompts[key].value === '' && q('[data-status]').textContent.includes('已暂停'), '暂停');
-        toggle.checked = true; toggle.dispatchEvent(new Event('change'));
-        edit(q('[data-setting="role"]'), '1', 'change');
-        edit(q('[data-setting="depth"]'), '2', 'change');
-        check(state.extensionPrompts[key].role === 1 && state.extensionPrompts[key].depth === 2, '高级设置');
-        edit(input, '<b data-test="untrusted">这是提示词纯文本</b>');
-        check(!q('[data-test="untrusted"]'), '提示词不能变成 HTML');
-        edit(input, '');
-        check(state.extensionPrompts[key].value === '', '清空');
-        edit(input, '请用简体中文回复。\n保持角色设定一致，不替用户决定行动。');
-        extension.cleanup();
-        check(!document.getElementById('fixed_prompt_extension_panel') && !state.extensionPrompts[key]
-            && [...handlers.values()].every(set => set.size === 0) && !globalThis.sillytavernFixedPromptInterceptor, '停用清理');
-        extension.init();
-        input = q('[data-setting="text"]');
-        check(input.value.includes('简体中文') && state.extensionPrompts[key].value === input.value, '重新启用恢复设置');
-        edit(q('[data-setting="role"]'), '0', 'change');
-        edit(q('[data-setting="depth"]'), '0', 'change');
-        result.textContent = `通过 ${checks} 项浏览器集成检查：自动保存、发送、去重、暂停、清空、高级设置和停用恢复。`;
-        result.style.color = '#8fd4a6';
+        result.textContent = 'v1.2.0 已就绪。可模拟发送并在金色面板中预览、复制。';
+        document.getElementById('send').addEventListener('click', () => {
+            const text = document.getElementById('message').value;
+            emit('generate', 'normal', {}, false);
+            state.chat = [{ is_user: true, is_system: false, mes: text }];
+            const coreChat = state.chat.map(message => ({ ...message }));
+            globalThis.sillytavernFixedPromptInterceptor(coreChat, 8192, () => {}, 'normal');
+            const request = { type: 'normal', messages: coreChat.map(message => ({
+                role: message.is_user ? 'user' : 'assistant', content: message.mes,
+            })) };
+            emit('request', request);
+            document.getElementById('wire').textContent = JSON.stringify(request, null, 2);
+            emit('ended');
+            result.textContent = state.chat[0].mes === text ? '模拟发送完成，原始聊天文字保持不变。' : '错误：原始聊天被修改。';
+        });
     } catch (error) {
-        result.textContent = `验证失败：${error.message}`;
-        result.style.color = '#ff9999';
+        result.textContent = '加载失败：' + error.message;
         console.error(error);
     }
 </script>

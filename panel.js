@@ -1,4 +1,5 @@
 import { createParticlePanel } from './particles.js';
+import { copyText } from './clipboard.js';
 
 export const PANEL_ID = 'fixed_prompt_extension_panel';
 const chevron = direction => `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${direction === 'up' ? 'm18 15-6-6-6 6' : 'm6 9 6 6 6-6'}"/></svg>`;
@@ -24,18 +25,14 @@ export function mountPanel(controller) {
                     <button class="advanced-toggle" type="button" aria-expanded="false" aria-controls="square-prompt-advanced"><span>高级设置</span><span class="toggle-side"><span class="toggle-label">展开</span>${chevron('down')}</span></button>
                 </section>
                 <section class="advanced" id="square-prompt-advanced" inert aria-hidden="true"><div class="advanced-inner">
-                    <label class="field" for="square-prompt-role">发送身份</label>
-                    <select id="square-prompt-role" data-setting="role"><option value="0">系统提示（推荐）</option><option value="1">用户</option><option value="2">助手</option></select>
-                    <label class="field depth" for="square-prompt-depth">插入深度</label>
-                    <input id="square-prompt-depth" data-setting="depth" type="number" value="0" min="0" max="100" step="1">
-                    <p class="help">默认 0，放在最近一条聊天之后。数值越大，位置越靠前；通常保持默认即可。</p>
-                    <div class="divider"></div>
-                    <p class="help">写一次，每次聊天自动带给 AI。应用于当前酒馆账号的所有聊天；不会作为消息显示在聊天窗口。支持 {{user}} 和 {{char}}。</p>
-                    <p class="help">普通发送、重新生成、滑动回复和继续回复都会携带。后台静默任务和 AI 代写用户消息不携带。</p>
-                    <div class="divider"></div>
-                    <b class="field">发送检查 · v1.1.1</b>
+                    <label class="field" for="square-prompt-preview"><b>本次发送内容 · v1.2.0</b></label>
                     <p class="help" data-check-summary></p>
                     <p class="help" data-check-detail></p>
+                    <textarea id="square-prompt-preview" class="preview" data-preview readonly placeholder="发送一条消息后，这里会显示本次用户消息＋固定提示词。"></textarea>
+                    <div class="copy-row"><button class="copy-button" type="button" data-copy disabled>一键复制</button><span class="help" data-copy-status role="status" aria-live="polite"></span></div>
+                    <div class="divider"></div>
+                    <p class="help">固定提示词直接附在本次用户消息后面，一起发给 AI。聊天记录保留原文；关闭面板不影响自动附带。</p>
+                    <p class="help">应用于当前酒馆账号的所有聊天。支持 {{user}}、{{char}} 等酒馆宏。普通发送、重新生成、滑动回复和继续回复均携带；后台静默任务和 AI 代写用户消息不携带。</p>
                 </div></section>
             </div><canvas aria-hidden="true"></canvas></div></div>
         </div>`;
@@ -50,13 +47,19 @@ export function mountPanel(controller) {
     function renderStatus() {
         const settings = controller.settings();
         const ready = settings.enabled && settings.text.trim().length > 0;
-        const check = controller.requestCheck.report();
+        const check = controller.delivery.report();
         const status = q('[data-status]');
         status.textContent = !settings.enabled ? '已暂停 · 保留提示词，下次启用即可继续'
             : ready ? check.summary : '等待填写 · 输入固定提示词后自动生效';
         status.dataset.active = String(ready);
         q('[data-check-summary]').textContent = status.textContent;
         q('[data-check-detail]').textContent = check.detail;
+        const preview = q('[data-preview]');
+        if (preview.value !== check.preview) {
+            preview.value = check.preview;
+            q('[data-copy-status]').textContent = '';
+        }
+        q('[data-copy]').disabled = !check.preview;
         q('[data-count]').textContent = `${Array.from(settings.text).length} 字符`;
     }
 
@@ -74,10 +77,19 @@ export function mountPanel(controller) {
         const key = input.dataset.setting;
         listen(input, key === 'text' ? 'input' : 'change', () => {
             controller.update({ [key]: key === 'enabled' ? input.checked : input.value });
-            if (key === 'depth') input.value = String(controller.settings().depth);
             renderStatus();
         });
     }
+
+    listen(q('[data-copy]'), 'click', async () => {
+        const text = controller.delivery.report().preview;
+        if (!text) return;
+        const copied = await copyText(text, document, root.activeElement);
+        // The user may have edited the prompt or started another turn while copying.
+        if (q('[data-preview]').value === text) {
+            q('[data-copy-status]').textContent = copied ? '已复制' : '未能自动复制，请选中上方文字复制';
+        }
+    });
 
     let layoutFrame = 0;
     let anchor = null;

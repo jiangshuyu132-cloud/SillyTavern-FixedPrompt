@@ -1,4 +1,4 @@
-import { createRequestCheck } from './request-check.js';
+import { createDelivery } from './delivery.js';
 
 export const SETTINGS_KEY = 'fixed_prompt_extension';
 export const PROMPT_KEY = 'fixed_prompt_extension_prompt';
@@ -21,33 +21,21 @@ export function normalizeSettings(value) {
     };
 }
 
-export function promptForGeneration(settings, type = 'normal') {
-    const normalized = normalizeSettings(settings);
-    // Background summaries and impersonation are separate tasks, not chat replies.
-    const excluded = ['quiet', 'impersonate'].includes(String(type).toLowerCase());
-    return normalized.enabled && !excluded && normalized.text.trim()
-        ? normalized.text
-        : '';
-}
-
-/** Uses SillyTavern's own prompt store; never edits or appends chat messages. */
+/** Saved settings stay compatible; delivery now appends to a request-only user message. */
 export function createController(getContext, onReportChange = () => {}) {
-    let currentType = 'normal';
-    const requestCheck = createRequestCheck(getContext, settings, onReportChange);
+    const delivery = createDelivery(getContext, settings, onReportChange);
 
     function settings() {
         return normalizeSettings(getContext()?.extensionSettings?.[SETTINGS_KEY]);
     }
 
-    function sync(type = currentType) {
-        currentType = type || 'normal';
+    function clearLegacyPrompt() {
         const ctx = getContext();
-        if (!ctx?.setExtensionPrompt) return '';
-        const value = settings();
-        const prompt = promptForGeneration(value, currentType);
-        // IN_CHAT = 1; SYSTEM = 0; USER = 1; ASSISTANT = 2. No world-info scan.
-        ctx.setExtensionPrompt(PROMPT_KEY, prompt, 1, value.depth, false, value.role);
-        return prompt;
+        // Prevent simultaneous v1.1-style injection and the new user-message attachment.
+        if (ctx?.extensionPrompts && PROMPT_KEY in ctx.extensionPrompts) {
+            ctx.setExtensionPrompt?.(PROMPT_KEY, '', 1, 0, false, 0);
+            delete ctx.extensionPrompts[PROMPT_KEY];
+        }
     }
 
     function update(patch) {
@@ -55,19 +43,16 @@ export function createController(getContext, onReportChange = () => {}) {
         if (!ctx?.extensionSettings) throw new Error('酒馆设置接口尚未就绪。');
         const next = normalizeSettings({ ...settings(), ...patch });
         ctx.extensionSettings[SETTINGS_KEY] = next;
-        sync();
+        clearLegacyPrompt();
         ctx.saveSettingsDebounced();
-        requestCheck.reset(false);
+        delivery.changed();
         return next;
     }
 
     function clear() {
-        const ctx = getContext();
-        ctx?.setExtensionPrompt?.(PROMPT_KEY, '', 1, 0, false, 0);
-        // Removing our own entry also releases any future filter or metadata.
-        if (ctx?.extensionPrompts) delete ctx.extensionPrompts[PROMPT_KEY];
-        requestCheck.reset();
+        clearLegacyPrompt();
+        delivery.reset();
     }
 
-    return { settings, sync, update, clear, requestCheck };
+    return { settings, update, clear, clearLegacyPrompt, delivery };
 }

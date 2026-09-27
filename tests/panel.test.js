@@ -66,9 +66,12 @@ function fixture({ reduced = false, canvasAvailable = true, saved } = {}) {
     }
     const context = {
         extensionSettings: { [SETTINGS_KEY]: saved ?? { text: '原来保存的 {{char}} 规则', enabled: true, depth: 3, role: 1 } },
-        extensionPrompts: { unrelated: { value: 'keep' } },
+        extensionPrompts: { unrelated: { value: 'keep' }, [PROMPT_KEY]: { value: 'old injection' } },
+        chat: [{ is_user: true, is_system: false, mes: '带我去城门。' }],
+        mainApi: 'openai', name1: '旅人', name2: '向导',
         eventTypes: { GENERATION_AFTER_COMMANDS: 'generate', CHAT_CHANGED: 'chat',
-            CHAT_COMPLETION_SETTINGS_READY: 'request', GENERATION_ENDED: 'ended', GENERATION_STOPPED: 'stopped' },
+            CHAT_COMPLETION_SETTINGS_READY: 'request', GENERATE_AFTER_DATA: 'data',
+            GENERATION_ENDED: 'ended', GENERATION_STOPPED: 'stopped' },
         eventSource: new EventEmitter(),
         setExtensionPrompt(key, value, position, depth, scan, role) {
             this.extensionPrompts[key] = { value, position, depth, scan, role };
@@ -110,8 +113,11 @@ afterEach(() => { plugin.cleanup(); });
 
 test('upgrade restores existing settings without writing them; initial panel and advanced are closed', () => {
     assert.equal(env.q('[data-setting="text"]').value, '原来保存的 {{char}} 规则');
-    assert.equal(env.q('[data-setting="role"]').value, '1');
-    assert.equal(env.q('[data-setting="depth"]').value, '3');
+    assert.equal(env.q('[data-setting="role"]'), null);
+    assert.equal(env.q('[data-setting="depth"]'), null);
+    assert.equal(env.context.extensionSettings[SETTINGS_KEY].role, 1);
+    assert.equal(env.context.extensionSettings[SETTINGS_KEY].depth, 3);
+    assert.equal(env.q('[data-copy]').disabled, true);
     assert.equal(env.saves, 0);
     assert.equal(env.q('.viewport').dataset.visible, 'false');
     assert.equal(env.q('.square').inert, true);
@@ -119,7 +125,7 @@ test('upgrade restores existing settings without writing them; initial panel and
     assert.equal(env.q('.advanced').style.height, '');
     assert.equal(env.q('.advanced-toggle').getAttribute('aria-expanded'), 'false');
     assert.equal(env.host.style.left, '200px');
-    assert.equal(env.context.extensionPrompts[PROMPT_KEY].value, '原来保存的 {{char}} 规则');
+    assert.equal(env.context.extensionPrompts[PROMPT_KEY], undefined);
 });
 
 test('main opens for 4.5 seconds with particles and releases its animation loop at rest', () => {
@@ -168,39 +174,34 @@ test('closing midway cancels particles; reopening resets advanced but keeps save
     assert.equal(env.saves, 0);
 });
 
-test('real controls save text literally and update prompt injection including all three roles', () => {
+test('real controls auto-save literal text; disabling retains it without creating a separate prompt', () => {
     const text = '<img src=x onerror=alert(1)>✨\n{{user}}';
     env.change('text', text);
     assert.equal(env.q('[data-count]').textContent, `${Array.from(text).length} 字符`);
     assert.equal(env.root.querySelector('img'), null);
     assert.equal(env.context.extensionSettings[SETTINGS_KEY].text, text);
-    for (const role of [0, 1, 2]) {
-        env.change('role', String(role));
-        assert.equal(env.context.extensionPrompts[PROMPT_KEY].role, role);
-    }
-    env.change('depth', '900');
-    assert.equal(env.q('[data-setting="depth"]').value, '100');
-    assert.equal(env.context.extensionPrompts[PROMPT_KEY].depth, 100);
     env.change('enabled', false);
-    assert.equal(env.context.extensionPrompts[PROMPT_KEY].value, '');
+    assert.match(env.q('[data-status]').textContent, /已暂停/);
     assert.equal(env.context.extensionSettings[SETTINGS_KEY].text, text);
     env.change('enabled', true);
-    assert.equal(env.context.extensionPrompts[PROMPT_KEY].value, text);
-    assert.equal(env.saves, 7);
+    assert.equal(env.context.extensionPrompts[PROMPT_KEY], undefined);
+    assert.equal(env.context.extensionSettings[SETTINGS_KEY].enabled, true);
+    assert.equal(env.saves, 3);
 });
 
 test('generation and chat changes still use live saved settings through the original hooks', () => {
     env.context.eventSource.emit('generate', 'quiet');
-    assert.equal(env.context.extensionPrompts[PROMPT_KEY].value, '');
+    assert.equal(env.context.extensionPrompts[PROMPT_KEY], undefined);
     env.change('text', '在后台任务期间修改');
-    assert.equal(env.context.extensionPrompts[PROMPT_KEY].value, '');
-    globalThis.sillytavernFixedPromptInterceptor([], 0, null, 'swipe');
-    assert.equal(env.context.extensionPrompts[PROMPT_KEY].value, '在后台任务期间修改');
+    const copy = [...env.context.chat];
+    globalThis.sillytavernFixedPromptInterceptor(copy, 0, null, 'swipe');
+    assert.equal(copy[0].mes, '带我去城门。\n\n【固定提示词】\n在后台任务期间修改');
+    assert.equal(env.context.chat[0].mes, '带我去城门。');
     env.context.extensionSettings[SETTINGS_KEY] = { text: '切换后的规则', enabled: false, role: 2, depth: 2 };
     env.context.eventSource.emit('chat');
     assert.equal(env.q('[data-setting="text"]').value, '切换后的规则');
-    assert.equal(env.q('[data-setting="role"]').value, '2');
-    assert.equal(env.context.extensionPrompts[PROMPT_KEY].value, '');
+    assert.equal(env.context.extensionPrompts[PROMPT_KEY], undefined);
+    assert.equal(env.q('[data-preview]').value, '');
 });
 
 test('mobile resize follows the chat edge and keeps panel within visible width', () => {
@@ -229,13 +230,14 @@ test('cleanup removes all owned events, observers and frames; reinit keeps saved
     assert.equal(env.context.eventSource.listenerCount('chat'), 0);
     assert.equal(env.context.eventSource.listenerCount('generate'), 0);
     assert.equal(env.context.eventSource.listenerCount('request'), 0);
+    assert.equal(env.context.eventSource.listenerCount('data'), 0);
     assert.equal(env.context.eventSource.listenerCount('ended'), 0);
     assert.equal(env.context.eventSource.listenerCount('stopped'), 0);
     assert.equal(globalThis.sillytavernFixedPromptInterceptor, undefined);
     assert.equal(env.context.extensionPrompts[PROMPT_KEY], undefined);
     assert.equal(env.context.extensionPrompts.unrelated.value, 'keep');
     plugin.init();
-    assert.equal(env.context.extensionPrompts[PROMPT_KEY].value, '重启后保留');
+    assert.equal(env.context.extensionPrompts[PROMPT_KEY], undefined);
     assert.equal(env.document.getElementById('fixed_prompt_extension_panel').shadowRoot.querySelector('textarea').value, '重启后保留');
 });
 
@@ -262,36 +264,38 @@ test('switching reduced motion on while animating completes the active transitio
     assert.equal(env.frames.size, 0);
 });
 
-test('actual registered pre-send event repairs a nested-generation omission and updates visible diagnostics', () => {
+test('actual pre-send event attaches to user content and updates the preview after a nested quiet task', () => {
     env.change('text', '请用简体中文回复。');
-    env.change('depth', '0');
     const events = env.context.eventSource;
     events.emit('generate', 'normal', {}, false);
     events.emit('generate', 'quiet', {}, false);
-    assert.equal(env.context.extensionPrompts[PROMPT_KEY].value, '');
+    assert.equal(env.context.extensionPrompts[PROMPT_KEY], undefined);
     const quiet = { type: 'quiet', messages: [{ role: 'user', content: '后台测试' }] };
     events.emit('request', quiet);
     events.emit('ended');
-    const foreground = { type: 'normal', messages: [{ role: 'user', content: '你好' }] };
+    const foreground = { type: 'normal', messages: [{ role: 'user', content: '带我去城门。' }] };
     events.emit('request', foreground);
     assert.equal(quiet.messages.length, 1);
-    assert.equal(foreground.messages.at(-1).content, '请用简体中文回复。');
-    assert.match(env.q('[data-status]').textContent, /已补回/);
-    assert.match(env.q('[data-check-summary]').textContent, /待发送请求/);
-    assert.match(env.q('[data-check-detail]').textContent, /所选身份/);
+    assert.equal(foreground.messages[0].content, '带我去城门。\n\n【固定提示词】\n请用简体中文回复。');
+    assert.match(env.q('[data-status]').textContent, /已附带/);
+    assert.match(env.q('[data-check-detail]').textContent, /待发送请求/);
+    assert.equal(env.q('[data-preview]').value, foreground.messages[0].content);
+    assert.equal(env.q('[data-copy]').disabled, false);
     events.emit('request', foreground);
-    assert.equal(foreground.messages.length, 2);
+    assert.equal(foreground.messages.length, 1);
     env.change('text', '新的设置');
-    assert.match(env.q('[data-status]').textContent, /等待下一次发送检查/);
+    assert.match(env.q('[data-status]').textContent, /下次发送/);
+    assert.equal(env.q('[data-preview]').value, '');
+    assert.equal(env.q('[data-copy]').disabled, true);
 });
 
-test('finding the prompt reports verification, while a stopped generation never claims it was sent', () => {
+test('matching only a system message reports failure, and stopping never claims success', () => {
     env.change('text', '请用简体中文回复。');
     const events = env.context.eventSource;
     events.emit('generate', 'normal', {}, false);
     const request = { type: 'normal', messages: [{ role: 'system', content: '请用简体中文回复。' }] };
     events.emit('request', request);
-    assert.match(env.q('[data-status]').textContent, /已找到提示词/);
+    assert.match(env.q('[data-status]').textContent, /本次用户消息未找到/);
     assert.equal(request.messages.length, 1);
     events.emit('generate', 'normal', {}, false);
     events.emit('stopped');
@@ -304,19 +308,45 @@ test('finding the prompt reports verification, while a stopped generation never 
 
 test('verification runs after a later-loaded request editor without duplicate listeners', () => {
     env.change('text', '请用简体中文回复。');
-    env.change('depth', '0');
     const events = env.context.eventSource;
-    const editor = data => { data.messages = [{ role: 'user', content: '其他扩展组装的消息' }]; };
+    const editor = data => { data.messages = [{ role: 'user', content: '带我去城门。' }]; };
     events.on('request', editor);
     for (let i = 0; i < 2; i++) {
         events.emit('generate', 'normal', {}, false);
-        const data = { type: 'normal', messages: [{ role: 'system', content: '请用简体中文回复。' }] };
+        const copy = [...env.context.chat];
+        globalThis.sillytavernFixedPromptInterceptor(copy, 8192, () => {}, 'normal');
+        const data = { type: 'normal', messages: [{ role: 'user', content: copy[0].mes }] };
         events.emit('request', data);
-        assert.equal(data.messages.length, 2);
-        assert.equal(data.messages[0].content, '其他扩展组装的消息');
-        assert.equal(data.messages[1].content, '请用简体中文回复。');
+        assert.equal(data.messages.length, 1);
+        assert.equal(data.messages[0].content, '带我去城门。\n\n【固定提示词】\n请用简体中文回复。');
         assert.equal(events.listenerCount('request'), 2);
     }
     plugin.cleanup();
     assert.equal(events.listenerCount('request'), 1);
+});
+
+test('copy button copies the exact outgoing preview as text', async () => {
+    let copied;
+    const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {
+        clipboard: { async writeText(text) { copied = text; } },
+    } });
+    try {
+        env.change('text', '<b>请用简体中文回复。</b>');
+        const events = env.context.eventSource;
+        events.emit('generate', 'normal', {}, false);
+        const copy = [...env.context.chat];
+        globalThis.sillytavernFixedPromptInterceptor(copy, 8192, null, 'normal');
+        const data = { type: 'normal', messages: [{ role: 'user', content: copy[0].mes }] };
+        events.emit('request', data);
+        env.click('[data-copy]');
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(copied, data.messages[0].content);
+        assert.equal(env.q('[data-copy-status]').textContent, '已复制');
+        assert.equal(env.q('[data-preview]').value, copied);
+        assert.equal(env.context.chat[0].mes, '带我去城门。');
+    } finally {
+        if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+        else delete globalThis.navigator;
+    }
 });
