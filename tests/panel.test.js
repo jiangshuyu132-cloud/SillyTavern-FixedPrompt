@@ -12,14 +12,16 @@ let env;
 
 function fixture({ reduced = false, canvasAvailable = true, saved } = {}) {
     const { window, document } = parseHTML('<html><body><div id="extensions_settings2"></div><main id="chat"><p>示例聊天</p></main></body></html>');
-    let now = 0, frameId = 0, drawCount = 0, saves = 0;
+    let now = 0, frameId = 0, drawCount = 0, saves = 0, maskFrames = 0, latestMask = null;
+    const canvasImages = new WeakMap();
     const frames = new Map(), observers = new Set();
     const bounds = { left: 200, top: 80, right: 1100, bottom: 880, width: 900, height: 800 };
     const media = new window.EventTarget();
     media.matches = reduced;
     const drawing = {
         setTransform() {}, clearRect() {}, save() {}, restore() {}, beginPath() {},
-        moveTo() {}, lineTo() {}, stroke() {},
+        moveTo() {}, lineTo() {}, stroke() {}, drawImage() {}, translate() {}, rotate() {},
+        createImageData(w, h) { return { data: new Uint8ClampedArray(w * h * 4) }; },
         createLinearGradient() { return { addColorStop() {} }; },
         fillRect() { drawCount++; },
     };
@@ -38,7 +40,21 @@ function fixture({ reduced = false, canvasAvailable = true, saved } = {}) {
     Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => now } });
     window.innerWidth = 1280;
     window.innerHeight = 960;
-    window.HTMLCanvasElement.prototype.getContext = () => canvasAvailable ? drawing : null;
+    window.HTMLCanvasElement.prototype.getContext = function () {
+        const canvas = this;
+        return canvasAvailable ? { ...drawing, putImageData(data) { canvasImages.set(canvas, data); } } : null;
+    };
+    window.HTMLCanvasElement.prototype.toDataURL = function () {
+        maskFrames++;
+        const data = canvasImages.get(this).data;
+        let transparent = 0, opaque = 0;
+        for (let i = 3; i < data.length; i += 4) {
+            if (data[i] === 0) transparent++;
+            if (data[i] === 255) opaque++;
+        }
+        latestMask = { transparent, opaque, pixels: data.length / 4, width: this.width, height: this.height };
+        return 'data:image/png;base64,mock' + maskFrames;
+    };
     // linkedom does not implement these browser properties.
     Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
         configurable: true,
@@ -55,6 +71,7 @@ function fixture({ reduced = false, canvasAvailable = true, saved } = {}) {
         const adv = parseFloat(host?.shadowRoot.querySelector('.advanced')?.style.height) || 0;
         if (element.id === 'chat') return { ...bounds };
         if (element.classList.contains('stage')) return { left: bounds.left, top: bounds.top, width: side + 36, height: side + adv + 32 };
+        if (element.classList.contains('shell')) return { left: bounds.left + 24, top: bounds.top + 16, width: side, height: side + adv };
         if (element.classList.contains('square')) return { left: bounds.left + 24, top: bounds.top + 16, width: side, height: side };
         if (element.classList.contains('advanced')) return { left: bounds.left + 24, top: bounds.top + 16 + side, width: side, height: adv };
         if (element.classList.contains('advanced-inner')) return { left: 0, top: 0, width: side, height: 360 };
@@ -89,6 +106,7 @@ function fixture({ reduced = false, canvasAvailable = true, saved } = {}) {
     const q = selector => root.querySelector(selector);
     return { context, document, window, host, root, q, bounds, media, frames, observers,
         get draws() { return drawCount; }, get saves() { return saves; },
+        get maskFrames() { return maskFrames; }, get mask() { return latestMask; },
         click(selector) { q(selector).click(); },
         change(key, value) {
             const input = q(`[data-setting="${key}"]`);
@@ -144,7 +162,7 @@ test('main opens for 4.5 seconds with particles and releases its animation loop 
     assert.equal(env.frames.size, 0);
 });
 
-test('advanced opens downwards for 3.5 seconds and closes in 0.9 seconds', () => {
+test('advanced opens for 3.5 seconds then dissolves in the reference 2.87 seconds', () => {
     env.click('.handle'); env.advance(4500); env.click('.advanced-toggle');
     env.advance(1750);
     assert.ok(Math.abs(parseFloat(env.q('.advanced').style.height) - 180) < 1);
@@ -153,25 +171,102 @@ test('advanced opens downwards for 3.5 seconds and closes in 0.9 seconds', () =>
     assert.equal(env.q('.advanced').style.height, '360px');
     assert.equal(env.q('.advanced').inert, false);
     assert.equal(env.q('.toggle-label').textContent, '收起');
-    env.click('.advanced-toggle'); env.advance(450);
-    assert.ok(Math.abs(parseFloat(env.q('.advanced').style.height) - 180) < 1);
-    env.advance(450);
+    env.click('.advanced-toggle'); env.advance(1400);
+    assert.equal(env.q('.advanced').style.height, '360px');
+    assert.equal(env.q('.advanced').inert, true);
+    assert.match(env.q('.advanced').style.getPropertyValue('mask-image'), /data:image\/png/);
+    assert.ok(env.mask.transparent > 0 && env.mask.opaque > 0);
+    assert.equal(env.q('.shell').style.getPropertyValue('mask-image') || '', '');
+    env.advance(1460);
+    assert.equal(env.q('.advanced').style.height, '360px');
+    env.advance(20);
     assert.equal(env.q('.advanced').style.height, '0px');
     assert.equal(env.q('.advanced').inert, true);
+    assert.equal(env.q('.advanced').style.getPropertyValue('mask-image') || '', '');
+    assert.equal(env.q('.square').inert, false);
+    env.advance(2000);
+    assert.equal(env.frames.size, 0);
 });
 
-test('closing midway cancels particles; reopening resets advanced but keeps saved text', () => {
+test('opening can be cancelled; repeated clicks cannot restart closing; saved text survives', () => {
     env.click('.handle'); env.advance(1500); env.click('.handle');
     assert.equal(env.frames.size, 0);
     assert.equal(env.q('.viewport').dataset.visible, 'false');
-    env.click('.handle'); env.advance(4500); env.click('.advanced-toggle'); env.advance(1000);
-    env.click('.advanced-toggle'); env.advance(900);
-    assert.equal(env.q('.advanced').style.height, '0px');
-    env.click('.advanced-toggle'); env.advance(3500); env.click('.collapse');
+    env.click('.handle'); env.advance(4500); env.click('.advanced-toggle'); env.advance(3500);
+    env.click('.collapse'); env.advance(1700);
+    assert.equal(env.q('.square').inert, true);
+    assert.equal(env.q('.advanced').style.height, '360px');
+    assert.match(env.q('.shell').style.getPropertyValue('mask-image'), /data:image\/png/);
+    assert.ok(env.mask.height > env.mask.width);
+    assert.ok(env.mask.transparent > 0 && env.mask.opaque > 0);
+    env.click('.handle'); env.click('.collapse'); env.click('.advanced-toggle');
+    env.advance(1790);
+    assert.equal(env.q('.handle').getAttribute('aria-expanded'), 'true');
+    env.advance(20);
+    assert.equal(env.q('.handle').getAttribute('aria-expanded'), 'false');
+    assert.equal(env.q('.shell').style.getPropertyValue('mask-image') || '', '');
+    env.advance(2000);
+    assert.equal(env.q('.viewport').dataset.visible, 'false');
+    assert.equal(env.frames.size, 0);
     env.click('.handle'); env.advance(4500);
     assert.equal(env.q('.advanced-toggle').getAttribute('aria-expanded'), 'false');
     assert.equal(env.q('[data-setting="text"]').value, '原来保存的 {{char}} 规则');
     assert.equal(env.saves, 0);
+});
+
+test('closing while advanced is still opening dissolves the currently visible whole panel', () => {
+    env.click('.handle'); env.advance(4500); env.click('.advanced-toggle'); env.advance(1000);
+    const visibleHeight = env.q('.advanced').style.height;
+    env.click('.collapse'); env.advance(1750);
+    assert.equal(env.q('.advanced').style.height, visibleHeight);
+    assert.ok(env.maskFrames > 0);
+    env.advance(1750);
+    assert.equal(env.q('.handle').getAttribute('aria-expanded'), 'false');
+    assert.equal(env.q('.advanced').style.height, '0px');
+    assert.equal(env.context.extensionSettings[SETTINGS_KEY].enabled, true);
+});
+
+test('resizing during dissolution keeps the mask scaled and releases it on completion', () => {
+    env.click('.handle'); env.advance(4500); env.click('.collapse'); env.advance(1000);
+    Object.assign(env.bounds, { left: 0, width: 390, right: 390 });
+    env.window.innerWidth = 390;
+    env.window.dispatchEvent(new env.window.Event('resize'));
+    env.advance(1000);
+    assert.equal(env.q('.shell').style.getPropertyValue('mask-size'), '100% 100%');
+    assert.equal(env.host.style.width, '390px');
+    env.advance(1500);
+    assert.equal(env.q('.handle').getAttribute('aria-expanded'), 'false');
+    assert.equal(env.q('.shell').style.getPropertyValue('-webkit-mask-image') || '', '');
+});
+
+test('cleanup midway through dissolution removes masks and all scheduled frames', () => {
+    env.click('.handle'); env.advance(4500); env.click('.collapse'); env.advance(1000);
+    const shell = env.q('.shell');
+    assert.ok(env.maskFrames > 0);
+    plugin.cleanup();
+    assert.equal(shell.style.getPropertyValue('mask-image') || '', '');
+    assert.equal(shell.style.getPropertyValue('-webkit-mask-image') || '', '');
+    assert.equal(env.frames.size, 0);
+    assert.equal(env.observers.size, 0);
+    assert.equal(env.document.getElementById('fixed_prompt_extension_panel'), null);
+});
+
+test('reduced-motion change finishes an active main or advanced dissolution immediately', () => {
+    for (const part of ['main', 'advanced']) {
+        plugin.cleanup();
+        env = fixture();
+        env.click('.handle'); env.advance(4500);
+        if (part === 'advanced') { env.click('.advanced-toggle'); env.advance(3500); env.click('.advanced-toggle'); }
+        else env.click('.collapse');
+        env.advance(700);
+        env.media.matches = true;
+        env.media.dispatchEvent(new env.window.Event('change'));
+        assert.equal(env.frames.size, 0);
+        assert.equal(env.q('.shell').style.getPropertyValue('mask-image') || '', '');
+        assert.equal(env.q('.advanced').style.getPropertyValue('mask-image') || '', '');
+        assert.equal(env.q('.handle').getAttribute('aria-expanded'), String(part === 'advanced'));
+        assert.equal(env.q('.advanced').style.height, '0px');
+    }
 });
 
 test('real controls auto-save literal text; disabling retains it without creating a separate prompt', () => {

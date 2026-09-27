@@ -79,7 +79,7 @@
 #square-prompt-particles .square{aspect-ratio:1;min-height:0;display:flex;flex-direction:column;gap:10px;padding:22px;background:#181818;border:1px solid #3d372c;border-radius:9px;clip-path:inset(0 100% 0 0)}
 #square-prompt-particles header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0}
 #square-prompt-particles h3{font-size:21px;font-weight:600;margin:0}
-#square-prompt-particles .collapse{width:40px;height:40px;border:0;border-radius:50%;background:transparent;display:grid;place-items:center}
+#square-prompt-particles .collapse{width:52px;height:44px;font-size:13px;border:0;border-radius:7px;background:#27221b;display:grid;place-items:center}
 #square-prompt-particles .collapse svg{color:#b5aa90}
 #square-prompt-particles .intro{margin:0;font-size:15px;line-height:1.5}
 #square-prompt-particles .enabled{display:flex;align-items:center;gap:10px;min-height:34px;flex-shrink:0}

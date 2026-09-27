@@ -1,7 +1,10 @@
 // Animation geometry, timing and colors from the approved particle preview.
+import { createDissolve, clearDissolveMask, drawDissolveParticle } from './dissolve.js';
+
 export function createParticlePanel(root) {
     const q = selector => root.querySelector(selector);
     const stage = q('.stage');
+    const shell = q('.shell');
     const main = q('.square');
     const adv = q('.advanced');
     const inner = q('.advanced-inner');
@@ -13,7 +16,7 @@ export function createParticlePanel(root) {
     const motion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
     const reduced = () => !ctx || motion?.matches;
     let mode = 'closed', advanced = false, raf = 0, start = 0, last = 0;
-    let particles = [], width = 0, height = 0, extension = null;
+    let particles = [], width = 0, height = 0, extension = null, burn = null;
     const clamp = x => Math.max(0, Math.min(1, x));
     const ease = x => x * x * (3 - 2 * x);
 
@@ -31,17 +34,17 @@ export function createParticlePanel(root) {
             canvas.height = Math.round(height * d);
             ctx?.setTransform(d, 0, 0, d, 0, 0);
         }
-        if (advanced && !extension) adv.style.height = `${inner.offsetHeight}px`;
+        if (advanced && !extension && !burn) adv.style.height = `${inner.offsetHeight}px`;
     }
 
     function access() {
         main.inert = mode !== 'open';
         main.setAttribute('aria-hidden', String(main.inert));
         handle.setAttribute('aria-expanded', String(mode !== 'closed'));
-        handle.setAttribute('aria-label', mode === 'closed' ? '展开固定提示词' : '收起固定提示词');
+        handle.setAttribute('aria-label', mode === 'closed' ? '展开固定提示词' : '粒子消散收起固定提示词');
         handle.title = handle.getAttribute('aria-label');
-        viewport.dataset.visible = String(mode !== 'closed');
-        adv.inert = mode !== 'open' || !advanced || !!extension;
+        viewport.dataset.visible = String(mode !== 'closed' || particles.length > 0);
+        adv.inert = mode !== 'open' || !advanced || !!extension || !!burn;
         adv.setAttribute('aria-hidden', String(adv.inert));
         toggle.setAttribute('aria-expanded', String(advanced));
         q('.toggle-label').textContent = advanced ? '收起' : '展开';
@@ -72,6 +75,7 @@ export function createParticlePanel(root) {
     function tick(now) {
         const dt = Math.min((now - last) / 1000 || .016, .04);
         last = now;
+        resize();
         ctx.clearRect(0, 0, width, height);
         if (mode === 'opening') {
             const t = clamp((now - start) / 4500), g = rect(main);
@@ -133,12 +137,22 @@ export function createParticlePanel(root) {
                 access();
             }
         }
+        if (burn) {
+            let finished = false;
+            try { finished = burn.draw(now, dt); }
+            catch { finished = true; } // A blocked canvas mask must not leave an inert panel stranded.
+            if (finished) finishBurn();
+        }
         for (let i = particles.length - 1; i >= 0; i--) {
             const dot = particles[i];
             dot.age += dt;
             if (dot.age >= dot.life) { particles.splice(i, 1); continue; }
             dot.x += dot.vx * dt;
             dot.y += dot.vy * dt;
+            if (dot.type) {
+                drawDissolveParticle(ctx, dot, 1 - dot.age / dot.life, now);
+                continue;
+            }
             ctx.globalAlpha = (1 - dot.age / dot.life) ** 1.5;
             ctx.fillStyle = '#efd292';
             ctx.shadowColor = '#d6ae62';
@@ -147,7 +161,8 @@ export function createParticlePanel(root) {
             ctx.shadowBlur = 0;
         }
         ctx.globalAlpha = 1;
-        raf = mode === 'opening' || extension || particles.length ? requestAnimationFrame(tick) : 0;
+        viewport.dataset.visible = String(mode !== 'closed' || particles.length > 0);
+        raf = mode === 'opening' || extension || burn || particles.length ? requestAnimationFrame(tick) : 0;
     }
 
     function run() {
@@ -158,6 +173,10 @@ export function createParticlePanel(root) {
         cancelAnimationFrame(raf);
         raf = 0;
         extension = null;
+        burn?.clear();
+        burn = null;
+        clearDissolveMask(shell);
+        clearDissolveMask(adv);
         particles = [];
         advanced = false;
         adv.style.height = '0px';
@@ -176,31 +195,71 @@ export function createParticlePanel(root) {
         if (!reduced()) run();
     }
 
-    function close() {
-        const hadFocus = main.contains(root.activeElement) || adv.contains(root.activeElement);
-        reset();
+    function finishClosed() {
         mode = 'closed';
+        advanced = false;
+        adv.style.height = '0px';
         main.style.clipPath = 'inset(0 100% 0 0)';
         access();
-        if (hadFocus) handle.focus({ preventScroll: true });
+    }
+
+    function finishBurn() {
+        const all = burn?.target === shell;
+        burn?.clear();
+        burn = null;
+        if (all) finishClosed();
+        else {
+            advanced = false;
+            adv.style.height = '0px';
+            access();
+        }
+    }
+
+    function startBurn(part) {
+        if (burn || mode === 'closed') return;
+        const all = part === 'all';
+        const hadFocus = (all && main.contains(root.activeElement)) || adv.contains(root.activeElement);
+        extension = null;
+        particles = [];
+        if (all) mode = 'closing';
+        if (!reduced()) {
+            try { burn = createDissolve(all ? shell : adv, 3500 * (all ? 1 : .82), rect, ctx, particles); }
+            catch { burn = null; }
+        }
+        if (!burn) {
+            if (all) { reset(); finishClosed(); }
+            else { advanced = false; adv.style.height = '0px'; access(); }
+        } else { access(); run(); }
+        if (hadFocus) (all ? handle : toggle).focus({ preventScroll: true });
+    }
+
+    function close() {
+        if (mode === 'opening') {
+            reset();
+            finishClosed();
+        } else if (mode === 'open') startBurn('all');
     }
 
     function toggleAdvanced() {
-        if (mode !== 'open') return;
+        if (mode !== 'open' || burn || extension) return;
+        if (advanced) { startBurn('advanced'); return; }
         const from = adv.getBoundingClientRect().height;
-        advanced = !advanced;
-        extension = reduced() ? null : { start: performance.now(), duration: advanced ? 3500 : 900, from };
+        advanced = true;
+        extension = reduced() ? null : { start: performance.now(), duration: 3500, from };
         access();
         if (reduced()) adv.style.height = advanced ? `${inner.offsetHeight}px` : '0px';
         else run();
     }
 
     function finishMotion() {
-        if (!reduced() || mode === 'closed') return;
+        if (!reduced()) return;
         cancelAnimationFrame(raf);
         raf = 0;
         particles = [];
         extension = null;
+        ctx?.clearRect(0, 0, width, height);
+        if (burn) { finishBurn(); return; }
+        if (mode === 'closed') { access(); return; }
         mode = 'open';
         main.style.clipPath = 'none';
         adv.style.height = advanced ? `${inner.offsetHeight}px` : '0px';

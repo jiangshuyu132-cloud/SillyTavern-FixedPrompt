@@ -18,7 +18,7 @@
     #send, #message { padding: 8px 12px; }
 </style>
 <h1>固定提示词 · 浏览器验证</h1>
-<p class="instructions">独立示例，不连接酒馆或模型服务。点击正文左侧金色长条查看动画，模拟发送后打开「高级设置」预览并复制。</p>
+<p class="instructions">独立示例，不连接酒馆或模型服务。点击金色长条展开，再点击右上角「收起」查看 3.5 秒不规则消散。模拟发送后可在「高级设置」预览并复制。</p>
 <label>用户消息 <input id="message" value="带我去城门。"></label>
 <button id="send" type="button">模拟发送</button>
 <p id="result" role="status">正在加载……</p>
@@ -51,7 +51,7 @@
     try {
         const extension = await import('../index.js');
         extension.init();
-        result.textContent = 'v1.2.0 已就绪。可模拟发送并在金色面板中预览、复制。';
+        result.textContent = 'v1.2.1 已就绪。可查看粒子展开和消散、模拟发送、预览并复制。';
         document.getElementById('send').addEventListener('click', () => {
             const text = document.getElementById('message').value;
             emit('generate', 'normal', {}, false);
