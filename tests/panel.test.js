@@ -10,20 +10,24 @@ globalThis.jQuery = () => {};
 const plugin = await import('../index.js');
 let env;
 
-function fixture({ reduced = false, canvasAvailable = true, canvasThrows = false, maskThrows = false, saved } = {}) {
+function fixture({ reduced = false, canvasAvailable = true, canvasThrows = false, maskThrows = false, rectScale = 1, saved } = {}) {
     const { window, document } = parseHTML('<html><body><div id="extensions_settings2"></div><main id="chat"><p>示例聊天</p></main></body></html>');
     let now = 0, frameId = 0, drawCount = 0, saves = 0, maskFrames = 0, latestMask = null;
-    const canvasImages = new WeakMap();
+    const canvasImages = new WeakMap(), canvasContexts = new WeakMap();
+    let failDraw = false;
+    const clearCalls = [], lines = [];
     const frames = new Map(), observers = new Set();
     const bounds = { left: 200, top: 80, right: 1100, bottom: 880, width: 900, height: 800 };
     const media = new window.EventTarget();
     media.matches = reduced;
     const drawing = {
-        setTransform() {}, clearRect() {}, save() {}, restore() {}, beginPath() {},
-        moveTo() {}, lineTo() {}, stroke() {}, drawImage() {}, translate() {}, rotate() {},
+        setTransform(...args) { this.transform = args; },
+        clearRect(...args) { clearCalls.push({ args, transform: this.transform?.slice() }); },
+        save() {}, restore() {}, beginPath() {},
+        moveTo(x, y) { lines.push([x, y]); }, lineTo() {}, stroke() {}, drawImage() {}, translate() {}, rotate() {},
         createImageData(w, h) { return { data: new Uint8ClampedArray(w * h * 4) }; },
         createLinearGradient() { return { addColorStop() {} }; },
-        fillRect() { drawCount++; },
+        fillRect() { if (failDraw) throw new Error('Drawing interrupted'); drawCount++; },
     };
     Object.assign(globalThis, { window, document, devicePixelRatio: 2,
         matchMedia: () => media,
@@ -43,7 +47,9 @@ function fixture({ reduced = false, canvasAvailable = true, canvasThrows = false
     window.HTMLCanvasElement.prototype.getContext = function () {
         if (canvasThrows) throw new Error('Canvas blocked');
         const canvas = this;
-        return canvasAvailable ? { ...drawing, putImageData(data) { canvasImages.set(canvas, data); } } : null;
+        if (!canvasAvailable) return null;
+        if (!canvasContexts.has(canvas)) canvasContexts.set(canvas, { ...drawing, putImageData(data) { canvasImages.set(canvas, data); } });
+        return canvasContexts.get(canvas);
     };
     window.HTMLCanvasElement.prototype.toDataURL = function () {
         if (maskThrows) throw new Error('Canvas export blocked');
@@ -79,7 +85,11 @@ function fixture({ reduced = false, canvasAvailable = true, canvasThrows = false
         if (element.classList.contains('advanced-inner')) return { left: 0, top: 0, width: side, height: 360 };
         return { left: 0, top: 0, width: 0, height: 0 };
     }
-    window.HTMLElement.prototype.getBoundingClientRect = function () { return size(this); };
+    window.HTMLElement.prototype.getBoundingClientRect = function () {
+        const result = size(this);
+        if (this.id === 'chat') return result;
+        return Object.fromEntries(Object.entries(result).map(([key, value]) => [key, value * rectScale]));
+    };
     for (const [property, axis] of [['clientWidth', 'width'], ['clientHeight', 'height'], ['offsetHeight', 'height']]) {
         Object.defineProperty(window.HTMLElement.prototype, property, { configurable: true, get() { return size(this)[axis]; } });
     }
@@ -106,7 +116,8 @@ function fixture({ reduced = false, canvasAvailable = true, canvasThrows = false
     const host = document.getElementById('fixed_prompt_extension_panel');
     const root = host.shadowRoot;
     const q = selector => root.querySelector(selector);
-    return { context, document, window, host, root, q, bounds, media, frames, observers,
+    return { context, document, window, host, root, q, bounds, media, frames, observers, clearCalls, lines,
+        failNextDraw() { failDraw = true; },
         get draws() { return drawCount; }, get saves() { return saves; },
         get maskFrames() { return maskFrames; }, get mask() { return latestMask; },
         click(selector) { q(selector).click(); },
@@ -162,6 +173,85 @@ test('main opens for 4.5 seconds with particles and releases its animation loop 
     assert.equal(env.q('.advanced').getAttribute('aria-hidden'), 'true');
     env.advance(2000);
     assert.equal(env.frames.size, 0);
+});
+
+test('particle canvas is hidden at every idle state, including reopening and advanced collapse', () => {
+    const canvas = env.q('canvas');
+    assert.equal(canvas.style.visibility, 'hidden');
+    for (let cycle = 0; cycle < 2; cycle++) {
+        env.click('.handle'); env.advance(500);
+        assert.equal(canvas.style.visibility, 'visible');
+        env.advance(6000);
+        assert.equal(canvas.style.visibility, 'hidden');
+        env.click('.advanced-toggle'); env.advance(5500);
+        assert.equal(canvas.style.visibility, 'hidden');
+        env.click('.advanced-toggle'); env.advance(5000);
+        assert.equal(canvas.style.visibility, 'hidden');
+        env.click('.collapse'); env.advance(5500);
+        assert.equal(canvas.style.visibility, 'hidden');
+        assert.equal(env.q('.viewport').dataset.visible, 'false');
+        assert.equal(env.frames.size, 0);
+    }
+});
+
+test('each frame clears the entire high-DPI bitmap even if its prior transform changed', () => {
+    env.click('.handle'); env.advance(500);
+    const canvas = env.q('canvas'), ctx = canvas.getContext('2d');
+    ctx.setTransform(.5, 0, 0, .5, 100, 50);
+    env.clearCalls.length = 0;
+    env.advance(17);
+    for (const clear of env.clearCalls) {
+        assert.deepEqual(clear.transform, [1, 0, 0, 1, 0, 0]);
+        assert.deepEqual(clear.args, [0, 0, canvas.width, canvas.height]);
+    }
+    assert.ok(env.clearCalls.length > 0);
+    assert.deepEqual(ctx.transform, [2, 0, 0, 2, 0, 0]);
+});
+
+test('scaled panel geometry keeps the gold edge aligned with the local reveal boundary', () => {
+    env.click('.handle'); env.advance(2250);
+    const expectedLine = env.lines.at(-1), expectedClip = env.q('.square').style.clipPath;
+    for (const rectScale of [.5, 1.25, 2]) {
+        plugin.cleanup(); env = fixture({ rectScale });
+        env.click('.handle'); env.advance(2250);
+        assert.deepEqual(env.lines.at(-1), expectedLine);
+        assert.equal(env.q('.square').style.clipPath, expectedClip);
+    }
+});
+
+test('an interrupted opening frame clears the overlay and leaves settings and delivery usable', () => {
+    env.click('.handle'); env.advance(500);
+    env.failNextDraw();
+    assert.doesNotThrow(() => env.advance(50));
+    assert.equal(env.q('canvas').style.visibility, 'hidden');
+    assert.equal(env.q('.square').style.clipPath, 'none');
+    assert.equal(env.q('.square').inert, false);
+    assert.equal(env.frames.size, 0);
+    env.change('text', '绘图失败后仍发送。');
+    env.context.eventSource.emit('generate', 'normal', {}, false);
+    const chat = [...env.context.chat];
+    globalThis.sillytavernFixedPromptInterceptor(chat, 8192, () => {}, 'normal');
+    assert.match(chat.at(-1).mes, /绘图失败后仍发送。/);
+    env.click('.collapse');
+    assert.equal(env.q('.viewport').dataset.visible, 'false');
+    env.click('.handle');
+    assert.equal(env.q('.square').inert, false);
+    assert.equal(env.q('canvas').style.visibility, 'hidden');
+});
+
+test('drawing failure during advanced opening or whole-panel closing leaves no frozen layer', () => {
+    for (const transition of ['advanced', 'closing']) {
+        plugin.cleanup(); env = fixture();
+        env.click('.handle'); env.advance(6500);
+        env.click(transition === 'advanced' ? '.advanced-toggle' : '.collapse');
+        env.failNextDraw();
+        assert.doesNotThrow(() => env.advance(2000));
+        assert.equal(env.q('canvas').style.visibility, 'hidden');
+        assert.equal(env.frames.size, 0);
+        assert.equal(env.q('.shell').style.getPropertyValue('mask-image') || '', '');
+        assert.equal(env.q('.viewport').dataset.visible, transition === 'advanced' ? 'true' : 'false');
+        if (transition === 'advanced') assert.equal(env.q('.advanced').inert, false);
+    }
 });
 
 test('advanced opens for 3.5 seconds then dissolves in the reference 2.87 seconds', () => {

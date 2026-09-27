@@ -51,7 +51,7 @@
     try {
         const extension = await import('../index.js');
         extension.init();
-        result.textContent = 'v1.2.2 已就绪。可查看粒子展开和消散、模拟发送、预览并复制。';
+        result.textContent = 'v1.2.3 已就绪。可查看粒子展开和消散、模拟发送、预览并复制。';
         document.getElementById('send').addEventListener('click', () => {
             const text = document.getElementById('message').value;
             emit('generate', 'normal', {}, false);

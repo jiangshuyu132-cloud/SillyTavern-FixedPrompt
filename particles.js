@@ -16,7 +16,8 @@ export function createParticlePanel(root) {
     try { ctx = canvas.getContext('2d'); }
     catch { /* Privacy settings may reject Canvas. Keep the panel and delivery usable. */ }
     const motion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
-    const reduced = () => !ctx || motion?.matches;
+    let drawingFailed = false;
+    const reduced = () => !ctx || drawingFailed || motion?.matches;
     let mode = 'closed', advanced = false, raf = 0, start = 0, last = 0;
     let particles = [], width = 0, height = 0, extension = null, burn = null;
     const clamp = x => Math.max(0, Math.min(1, x));
@@ -24,7 +25,10 @@ export function createParticlePanel(root) {
 
     function rect(element) {
         const a = element.getBoundingClientRect(), b = stage.getBoundingClientRect();
-        return { x: a.left - b.left, y: a.top - b.top, w: a.width, h: a.height };
+        // Bounding rects include page/CSS scaling; Canvas uses local layout pixels.
+        const sx = b.width ? stage.clientWidth / b.width : 1;
+        const sy = b.height ? stage.clientHeight / b.height : 1;
+        return { x: (a.left - b.left) * sx, y: (a.top - b.top) * sy, w: a.width * sx, h: a.height * sy };
     }
 
     function resize() {
@@ -34,9 +38,22 @@ export function createParticlePanel(root) {
         if (canvas.width !== Math.round(width * d) || canvas.height !== Math.round(height * d)) {
             canvas.width = Math.round(width * d);
             canvas.height = Math.round(height * d);
-            ctx?.setTransform(d, 0, 0, d, 0, 0);
         }
+        ctx?.setTransform(width ? canvas.width / width : 1, 0, 0, height ? canvas.height / height : 1, 0, 0);
         if (advanced && !extension && !burn) adv.style.height = `${inner.offsetHeight}px`;
+    }
+
+    function clearCanvas() {
+        // Reset the backing bitmap and drawing state, not just a transformed area.
+        // Explicitly hide it at rest so a retained compositor frame cannot overlay chat.
+        canvas.style.visibility = 'hidden';
+        canvas.width = canvas.width;
+    }
+
+    function clearFrame() {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.setTransform(width ? canvas.width / width : 1, 0, 0, height ? canvas.height / height : 1, 0, 0);
     }
 
     function access() {
@@ -74,11 +91,11 @@ export function createParticlePanel(root) {
         ctx.restore();
     }
 
-    function tick(now) {
+    function drawFrame(now) {
         const dt = Math.min((now - last) / 1000 || .016, .04);
         last = now;
         resize();
-        ctx.clearRect(0, 0, width, height);
+        clearFrame();
         if (mode === 'opening') {
             const t = clamp((now - start) / 4500), g = rect(main);
             const v = ease(clamp(t / .35)), h = ease(clamp((t - .13) / .83));
@@ -164,10 +181,23 @@ export function createParticlePanel(root) {
         }
         ctx.globalAlpha = 1;
         viewport.dataset.visible = String(mode !== 'closed' || particles.length > 0);
-        raf = mode === 'opening' || extension || burn || particles.length ? requestAnimationFrame(tick) : 0;
+    }
+
+    function tick(now) {
+        raf = 0;
+        try {
+            drawFrame(now);
+            if (mode === 'opening' || extension || burn || particles.length) raf = requestAnimationFrame(tick);
+            else clearCanvas();
+        } catch {
+            // A failed frame must never leave a bright edge or unusable controls behind.
+            drawingFailed = true;
+            finishMotion();
+        }
     }
 
     function run() {
+        canvas.style.visibility = 'visible';
         if (!raf) { last = performance.now(); raf = requestAnimationFrame(tick); }
     }
 
@@ -182,7 +212,7 @@ export function createParticlePanel(root) {
         particles = [];
         advanced = false;
         adv.style.height = '0px';
-        ctx?.clearRect(0, 0, width, height);
+        clearCanvas();
     }
 
     function open() {
@@ -245,7 +275,7 @@ export function createParticlePanel(root) {
     function toggleAdvanced() {
         if (mode !== 'open' || burn || extension) return;
         if (advanced) { startBurn('advanced'); return; }
-        const from = adv.getBoundingClientRect().height;
+        const from = rect(adv).h;
         advanced = true;
         extension = reduced() ? null : { start: performance.now(), duration: 3500, from };
         access();
@@ -259,13 +289,12 @@ export function createParticlePanel(root) {
         raf = 0;
         particles = [];
         extension = null;
-        ctx?.clearRect(0, 0, width, height);
+        clearCanvas();
         if (burn) { finishBurn(); return; }
         if (mode === 'closed') { access(); return; }
         mode = 'open';
         main.style.clipPath = 'none';
         adv.style.height = advanced ? `${inner.offsetHeight}px` : '0px';
-        ctx?.clearRect(0, 0, width, height);
         access();
     }
 
@@ -283,6 +312,7 @@ export function createParticlePanel(root) {
     toggle.addEventListener('click', toggleAdvanced);
     q('.collapse').addEventListener('click', close);
     root.addEventListener('keydown', onEscape);
+    clearCanvas();
     access();
     resize();
 
