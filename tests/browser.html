@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>固定提示词 · 浏览器验证</title>
+<link rel="stylesheet" href="../style.css">
+<style>
+    :root { color-scheme: dark; --SmartThemeBorderColor:#555; --SmartThemeBlurTintColor:#272727 }
+    body { margin:40px auto; padding:0 20px; max-width:480px; font:16px/1.5 system-ui; color:#ddd; background:#151515 }
+    h1 { font-size:22px } .inline-drawer-header { background:#282828; padding:12px; border-radius:6px }
+    .inline-drawer-content { padding:0 10px } .text_pole { background:#252525; color:inherit; border:1px solid #555; border-radius:6px; padding:10px; font:inherit; box-sizing:border-box }
+    .checkbox_label { display:flex } summary { user-select:none } #result { font-size:14px; padding:12px; background:#222; white-space:pre-wrap }
+</style>
+<h1>固定提示词 · 浏览器验证</h1>
+<p>独立测试环境，不连接酒馆或模型服务。</p>
+<p id="result" role="status">正在验证……</p>
+<div id="extensions_settings2"></div>
+<script type="module">
+    const handlers = new Map();
+    let saves = 0;
+    const state = {
+        extensionSettings: {},
+        extensionPrompts: {},
+        eventTypes: { GENERATION_AFTER_COMMANDS:'generation_after_commands', CHAT_CHANGED:'chat_changed' },
+        eventSource: {
+            on(name, handler) { if (!handlers.has(name)) handlers.set(name, new Set()); handlers.get(name).add(handler); },
+            removeListener(name, handler) { handlers.get(name)?.delete(handler); },
+        },
+        setExtensionPrompt(key, value, position, depth, scan, role) {
+            state.extensionPrompts[key] = { value, position, depth, scan, role };
+        },
+        saveSettingsDebounced() { saves++; },
+    };
+    globalThis.SillyTavern = { getContext: () => ({ ...state }) };
+    const result = document.querySelector('#result');
+    let checks = 0;
+    function check(condition, message) { if (!condition) throw new Error(message); checks++; }
+    const key = 'fixed_prompt_extension_prompt';
+    const settingsKey = 'fixed_prompt_extension';
+    const emit = (name, ...args) => { for (const handler of handlers.get(name) ?? []) handler(...args); };
+    const edit = (element, value, event = 'input') => { element.value = value; element.dispatchEvent(new Event(event, { bubbles:true })); };
+    try {
+        const extension = await import('../index.js');
+        extension.init();
+        check(document.querySelectorAll('#fixed_prompt_extension_panel').length === 1, '重复挂载');
+        check([...handlers.values()].every(set => set.size === 1), '重复事件');
+        let input = document.querySelector('[data-setting="text"]');
+        check(input.value === '' && state.extensionPrompts[key].value === '', '初始状态');
+        edit(input, '请用中文回答 {{user}}。\n保持 {{char}} 的设定。');
+        check(saves === 1 && state.extensionSettings[settingsKey].text === input.value, '自动保存');
+        emit('generation_after_commands', 'normal', {}, false);
+        check(state.extensionPrompts[key].value === input.value, '发送注入');
+        globalThis.sillytavernFixedPromptInterceptor([], 8192, () => {}, 'regenerate');
+        check(Object.keys(state.extensionPrompts).length === 1, '重复生成去重');
+        emit('generation_after_commands', 'quiet');
+        check(state.extensionPrompts[key].value === '', '静默排除');
+        emit('generation_after_commands', 'continue');
+        check(state.extensionPrompts[key].value === input.value, '继续回复');
+        const toggle = document.querySelector('[data-setting="enabled"]');
+        toggle.checked = false; toggle.dispatchEvent(new Event('change'));
+        check(state.extensionPrompts[key].value === '' && document.querySelector('[data-status]').textContent.includes('已暂停'), '暂停');
+        toggle.checked = true; toggle.dispatchEvent(new Event('change'));
+        edit(document.querySelector('[data-setting="role"]'), '1', 'change');
+        edit(document.querySelector('[data-setting="depth"]'), '2', 'change');
+        check(state.extensionPrompts[key].role === 1 && state.extensionPrompts[key].depth === 2, '高级设置');
+        edit(input, '<b data-test="untrusted">这是提示词纯文本</b>');
+        check(!document.querySelector('[data-test="untrusted"]'), '提示词不能变成 HTML');
+        edit(input, '');
+        check(state.extensionPrompts[key].value === '', '清空');
+        edit(input, '请用简体中文回复。\n保持角色设定一致，不替用户决定行动。');
+        extension.cleanup();
+        check(!document.getElementById('fixed_prompt_extension_panel') && !state.extensionPrompts[key]
+            && [...handlers.values()].every(set => set.size === 0) && !globalThis.sillytavernFixedPromptInterceptor, '停用清理');
+        extension.init();
+        input = document.querySelector('[data-setting="text"]');
+        check(input.value.includes('简体中文') && state.extensionPrompts[key].value === input.value, '重新启用恢复设置');
+        edit(document.querySelector('[data-setting="role"]'), '0', 'change');
+        edit(document.querySelector('[data-setting="depth"]'), '0', 'change');
+        result.textContent = `通过 ${checks} 项浏览器集成检查：自动保存、发送、去重、暂停、清空、高级设置和停用恢复。`;
+        result.style.color = '#8fd4a6';
+    } catch (error) {
+        result.textContent = `验证失败：${error.message}`;
+        result.style.color = '#ff9999';
+        console.error(error);
+    }
+</script>
+</html>

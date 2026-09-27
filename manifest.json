@@ -1,0 +1,19 @@
+{
+    "display_name": "固定提示词",
+    "loading_order": 220,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "jiangshuyu132-cloud",
+    "version": "1.0.0",
+    "homePage": "https://github.com/jiangshuyu132-cloud/SillyTavern-FixedPrompt",
+    "generate_interceptor": "sillytavernFixedPromptInterceptor",
+    "hooks": {
+        "activate": "init",
+        "enable": "init",
+        "disable": "cleanup",
+        "delete": "cleanup",
+        "clean": "cleanup"
+    }
+}

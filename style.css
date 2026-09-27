@@ -1,0 +1,55 @@
+#fixed_prompt_extension_panel .fp-description {
+    margin: 12px 0;
+}
+#fixed_prompt_extension_panel .fp-enabled {
+    align-items: center;
+    gap: 8px;
+}
+#fixed_prompt_extension_panel .fp-status {
+    border-left: 3px solid var(--SmartThemeBorderColor, #777);
+    background: var(--SmartThemeBlurTintColor, rgba(128, 128, 128, 0.1));
+    border-radius: 4px;
+    padding: 10px 12px;
+    font-size: 0.9em;
+}
+#fixed_prompt_extension_panel .fp-status[data-active="true"] {
+    border-left-color: #68b987;
+}
+#fixed_prompt_extension_panel textarea {
+    width: 100%;
+    min-height: 210px;
+    resize: vertical;
+    line-height: 1.55;
+    box-sizing: border-box;
+    margin-top: 7px;
+}
+#fixed_prompt_extension_panel .fp-meta {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 5px 12px;
+    font-size: 0.8em;
+    opacity: 0.75;
+}
+#fixed_prompt_extension_panel .fp-hint {
+    font-size: 0.85em;
+    opacity: 0.8;
+    line-height: 1.6;
+}
+#fixed_prompt_extension_panel .fp-advanced {
+    border-top: 1px solid var(--SmartThemeBorderColor, #777);
+    margin-top: 14px;
+    padding: 12px 0;
+}
+#fixed_prompt_extension_panel summary {
+    cursor: pointer;
+    margin-bottom: 12px;
+}
+#fixed_prompt_extension_panel .fp-advanced label {
+    display: block;
+    margin: 12px 0 6px;
+}
+#fixed_prompt_extension_panel select,
+#fixed_prompt_extension_panel input[type="number"] {
+    width: 100%;
+}
