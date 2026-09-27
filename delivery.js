@@ -1,6 +1,7 @@
 const supportedTypes = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const normalType = type => type || 'normal';
-const normalize = text => String(text).replace(/\r\n?/g, '\n');
+// Match host formatting without changing the actual text sent to the model.
+const normalize = text => String(text).replace(/\r/g, '').trim();
 export const attachmentBlock = text => `\n\n【固定提示词】\n${text}`;
 
 export function messageText(message) {
@@ -10,11 +11,40 @@ export function messageText(message) {
         .map(part => part.text).join('\n');
 }
 
+function messageHasSegment(message, value, record) {
+    const text = normalize(messageText(message));
+    const prefix = record.name + ':';
+    // SillyTavern's "names in content" option adds this exact prefix.
+    return hasSegment(text, value) || (record.name && text.startsWith(prefix)
+        && hasSegment(text.slice(prefix.length).trimStart(), value));
+}
+
+function hasSegment(text, value) {
+    const needle = normalize(value);
+    if (!needle) return false;
+    const atBoundary = (index, direction) => {
+        while (index >= 0 && index < text.length) {
+            if (text[index] === '\n') return true;
+            if (!/\s/u.test(text[index])) return false;
+            index += direction;
+        }
+        return true;
+    };
+    // A quoted mention, a shared character or a prompt prefix is not a full segment.
+    for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1)) {
+        // Inspect adjacent whitespace only; do not rescan or copy an entire long
+        // context for every occurrence of a one-character user message.
+        if (atBoundary(at - 1, -1) && atBoundary(at + needle.length, 1)) return true;
+    }
+    return false;
+}
+
 /** Only modifies generation copies / outgoing payloads. Never mutates context.chat. */
 export function createDelivery(getContext, getSettings, onChange = () => {}) {
     let pending = null;
-    let coreRecords = new WeakMap();
+    let messageRecords = new WeakMap();
     let handledRequests = new WeakSet();
+    let generation = 0;
     let report = waiting();
 
     function waiting() {
@@ -28,7 +58,7 @@ export function createDelivery(getContext, getSettings, onChange = () => {}) {
     }
     function reset() {
         pending = null;
-        coreRecords = new WeakMap();
+        messageRecords = new WeakMap();
         handledRequests = new WeakSet();
         report = waiting();
         onChange();
@@ -40,10 +70,11 @@ export function createDelivery(getContext, getSettings, onChange = () => {}) {
     }
     function begin(type = 'normal', dryRun = false) {
         if (dryRun || !supportedTypes.has(normalType(type))) return;
+        generation++;
         pending = { type: normalType(type), record: null };
         publish('pending', '准备发送 · 正在组合消息', '本轮正在准备用户消息和固定提示词。');
     }
-    function makeRecord(base, type) {
+    function makeRecord(base, type, message) {
         const settings = getSettings();
         if (!settings.enabled || !settings.text.trim()) return null;
         const context = getContext();
@@ -55,7 +86,8 @@ export function createDelivery(getContext, getSettings, onChange = () => {}) {
                 return typeof value === 'string' ? value : match;
             });
         if (!text.trim()) return null;
-        return { type: normalType(type), base, block: attachmentBlock(text), composed: base + attachmentBlock(text) };
+        return { type: normalType(type), base, block: attachmentBlock(text), composed: base + attachmentBlock(text),
+            generation, hasUser: !!message, name: String(message?.name || context?.name1 || '') };
     }
     function intercept(chat, type = 'normal') {
         if (!supportedTypes.has(normalType(type)) || !Array.isArray(chat)) return;
@@ -63,19 +95,33 @@ export function createDelivery(getContext, getSettings, onChange = () => {}) {
             publish('error', '未附带 · 收到的不是生成副本', '为保护聊天记录，本次没有修改原始聊天。');
             return;
         }
-        const existing = coreRecords.get(chat);
-        if (existing) { pending = { type: existing.type, record: existing }; return; }
         const index = chat.findLastIndex(message => message?.is_user && !message.is_system);
-        const base = index < 0 ? '' : String(chat[index].mes ?? '');
+        const target = index < 0 ? null : chat[index];
+        const existing = target && messageRecords.get(target);
+        if (existing && existing.generation === generation && existing.type === normalType(type)
+            && target.mes === existing.composed) {
+            pending = { type: existing.type, record: existing };
+            return;
+        }
+        let base = target ? String(target.mes ?? '') : '';
+        // Only remove a block from a message object this extension itself produced.
+        if (existing && base.endsWith(existing.block)) base = base.slice(0, -existing.block.length);
         let record;
-        try { record = makeRecord(base, type); }
+        try { record = makeRecord(base, type, target); }
         catch { publish('error', '未附带 · 提示词宏处理失败', '固定文本已保存，但本轮无法完成宏替换。'); return; }
         if (!record) { pending = null; return; }
-        // Replace the object: even a shallow copy of saved messages is safe.
-        if (index >= 0) chat[index] = { ...chat[index], mes: record.composed };
-        else chat.push({ is_user: true, is_system: false, name: getContext()?.name1 || 'User', mes: record.composed });
-        coreRecords.set(chat, record);
         pending = { type: record.type, record };
+        // Replace the object: even a shallow copy of saved messages is safe.
+        const composedMessage = target ? { ...target, mes: record.composed }
+            : { is_user: true, is_system: false, name: getContext()?.name1 || 'User', mes: record.composed };
+        try {
+            if (index >= 0) chat[index] = composedMessage;
+            else chat.push(composedMessage);
+        } catch {
+            publish('error', '未附带 · 生成副本无法修改', '生成副本为只读，等待发送前核对；聊天记录未改动。');
+            return;
+        }
+        messageRecords.set(composedMessage, record);
         publish('prepared', '已组合 · 等待发送前核对', '已在生成副本中附带；下面是本轮组合预览。', record.composed);
     }
 
@@ -87,31 +133,36 @@ export function createDelivery(getContext, getSettings, onChange = () => {}) {
         let record = pending.record;
         if (!record) {
             const latest = getContext()?.chat?.findLast(message => message?.is_user && !message.is_system);
-            try { record = makeRecord(String(latest?.mes ?? ''), data.type); }
+            try { record = makeRecord(String(latest?.mes ?? ''), data.type, latest); }
             catch { return publish('error', '未附带 · 提示词宏处理失败', '本轮没有完成提示词组合。'); }
             if (!record) { pending = null; return { ...report }; }
             pending.record = record;
         }
         // Match only the current user message. Identical text in history/system/assistant
         // messages is never proof that this message carries the attachment.
-        const composed = normalize(record.composed);
         // Locate the newest occurrence of the base first. An older, identical turn
         // carrying the attachment must never hide a newer turn that lost it.
-        const needle = record.base.trim() ? normalize(record.base) : composed;
+        const needle = record.base.trim() ? record.base : record.block;
         let index = data.messages.findLastIndex(message => message?.role === 'user'
-            && normalize(messageText(message)).includes(needle));
-        if (index < 0 && record.base.trim()) {
-            return publish('error', '未附带 · 本次用户消息未找到',
-                '本次用户消息可能被其他扩展移除或改写，不能把历史里相同的提示词当成本次已附带。');
+            && messageHasSegment(message, needle, record));
+        if (index < 0 && record.hasUser && !record.base.trim()) {
+            // An image/audio-only user message may have lost just its text part.
+            index = data.messages.findLastIndex(message => message?.role === 'user' && !messageText(message).trim());
+        }
+        if (index < 0 && record.hasUser) {
+            return publish('unverified', '未核验 · 本次用户消息未找到',
+                '本次用户消息可能被宏、预设或其他扩展改写，无法确认位置；没有把提示词补到无关消息上。');
         }
         try {
             const messages = [...data.messages];
+            let modified = false;
             if (index < 0) {
                 // First-message regeneration / no user history: create a request-only user entry.
                 index = messages.length;
                 if (messages.at(-1)?.role === 'assistant') index--;
                 messages.splice(index, 0, { role: 'user', content: record.composed });
-            } else if (!normalize(messageText(messages[index])).includes(normalize(record.block))) {
+                modified = true;
+            } else if (!messageHasSegment(messages[index], record.block, record)) {
                 const target = messages[index];
                 if (typeof target.content === 'string') {
                     messages[index] = { ...target, content: target.content + record.block };
@@ -120,8 +171,9 @@ export function createDelivery(getContext, getSettings, onChange = () => {}) {
                 } else {
                     return publish('error', '未附带 · 用户消息格式无法识别', '没有更改其他消息或媒体附件。');
                 }
+                modified = true;
             }
-            data.messages = messages;
+            if (modified) data.messages = messages;
             handledRequests.add(data);
             pending = null;
             return publish('attached', '已附带 · 本次用户消息已包含固定提示词',

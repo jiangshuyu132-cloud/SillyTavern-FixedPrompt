@@ -203,7 +203,7 @@ test('missing current message reports failure without rewriting unrelated messag
     const data = { type: 'normal', messages: [{ role: 'system', content: fixed }, { role: 'user', content: '其他内容' }] };
     const original = structuredClone(data);
     delivery.verifyChat(data);
-    assert.equal(delivery.report().state, 'error');
+    assert.equal(delivery.report().state, 'unverified');
     assert.deepEqual(data, original);
 });
 
@@ -252,4 +252,171 @@ test('stop and reset disarm repair without claiming success', () => {
 
 test('preview extracts text only', () => {
     assert.equal(messageText({ content: [{ type: 'image_url', image_url: { url: fixed } }, { type: 'text', text: '正文' }] }), '正文');
+});
+
+test('short user input does not match a later preset containing the same character', () => {
+    const { context, delivery } = fixture();
+    context.chat = [{ is_user: true, mes: '好' }];
+    const copy = [...context.chat];
+    delivery.begin(); delivery.intercept(copy);
+    const preset = { role: 'user', content: '请写好后续内容。' };
+    const data = { type: 'normal', messages: [{ role: 'user', content: copy[0].mes }, preset] };
+    delivery.verifyChat(data);
+    assert.deepEqual(data.messages, [{ role: 'user', content: '好' + attachmentBlock(fixed) }, preset]);
+    assert.equal(delivery.report().preview, copy[0].mes);
+});
+
+test('late repair never attaches to a quoted mention of this user message', () => {
+    const { context, delivery } = fixture();
+    delivery.begin(); delivery.intercept([...context.chat]);
+    const preset = { role: 'user', content: '例如用户说“' + base + '”时使用指定格式。' };
+    const data = { type: 'normal', messages: [{ role: 'user', content: base }, preset] };
+    delivery.verifyChat(data);
+    assert.equal(data.messages[0].content, combined);
+    assert.equal(data.messages[1].content, preset.content);
+});
+
+test('host trimming of an image-only user message must not create a duplicate user entry', () => {
+    const { context, delivery } = fixture({ text: fixed + '  ' });
+    context.chat = [{ is_user: true, mes: '' }];
+    const copy = [...context.chat];
+    delivery.begin(); delivery.intercept(copy);
+    const parts = [{ type: 'text', text: copy[0].mes.trim() },
+        { type: 'image_url', image_url: { url: 'https://example.test/image.png' } }];
+    const data = { type: 'normal', messages: [{ role: 'user', content: parts }] };
+    delivery.verifyChat(data);
+    assert.equal(data.messages.length, 1);
+    assert.deepEqual(data.messages[0].content, parts);
+    assert.equal(delivery.report().state, 'attached');
+});
+
+test('host trimming and carriage-return removal preserve verification without adding another block', () => {
+    const { context, delivery } = fixture({ text: '甲\r乙  ' });
+    context.chat = [{ is_user: true, name: '旅人', mes: ' \n去\r城门。 ' }];
+    const copy = [...context.chat];
+    delivery.begin(); delivery.intercept(copy);
+    const actual = ('旅人: ' + copy[0].mes.replace(/\r/g, '')).trim();
+    const data = { type: 'normal', messages: [{ role: 'user', content: actual }] };
+    delivery.verifyChat(data);
+    assert.equal(data.messages[0].content, actual);
+    assert.equal(delivery.report().state, 'attached');
+});
+
+test('an existing fixed block must not match only a prefix of another prompt', () => {
+    const { context, delivery } = fixture({ text: '规则' });
+    const copy = [...context.chat];
+    delivery.begin(); delivery.intercept(copy);
+    const wrong = base + attachmentBlock('规则外的其他文字');
+    const data = { type: 'normal', messages: [{ role: 'user', content: wrong }] };
+    delivery.verifyChat(data);
+    assert.equal(data.messages[0].content, wrong + attachmentBlock('规则'));
+});
+
+test('re-entering the interceptor with a shallow copy does not duplicate or re-evaluate macros', () => {
+    const { context, delivery } = fixture();
+    let calls = 0;
+    context.substituteParams = text => { calls++; return text; };
+    const copy = [...context.chat];
+    delivery.begin(); delivery.intercept(copy);
+    const reused = [...copy];
+    delivery.intercept(reused);
+    assert.equal(reused.at(-1).mes, combined);
+    assert.equal(calls, 1);
+});
+
+test('a readonly request that already carries the attachment can be checked without assignment', () => {
+    const { context, delivery } = fixture();
+    const copy = [...context.chat];
+    delivery.begin(); delivery.intercept(copy);
+    const data = Object.freeze({ type: 'normal', messages: asMessages(copy) });
+    delivery.verifyChat(data);
+    assert.equal(delivery.report().state, 'attached');
+});
+
+test('literal persona-name text and host-added names are both checked correctly', () => {
+    for (const prefix of ['', '旅人: ']) {
+        const { context, delivery } = fixture();
+        context.chat = [{ is_user: true, name: '旅人', mes: '旅人: 出发。' }];
+        const copy = [...context.chat];
+        delivery.begin(); delivery.intercept(copy);
+        const text = prefix + copy[0].mes;
+        const data = { type: 'normal', messages: [{ role: 'user', content: text }] };
+        delivery.verifyChat(data);
+        assert.equal(data.messages[0].content, text);
+        assert.equal(delivery.report().state, 'attached');
+    }
+});
+
+test('missing text part is repaired inside an image-only user message', () => {
+    const { context, delivery } = fixture();
+    context.chat = [{ is_user: true, mes: '' }];
+    delivery.begin(); delivery.intercept([...context.chat]);
+    const image = { type: 'image_url', image_url: { url: 'https://example.test/image.png' } };
+    const data = { type: 'normal', messages: [{ role: 'user', content: [image] }] };
+    delivery.verifyChat(data);
+    assert.deepEqual(data.messages, [{ role: 'user', content: [image, { type: 'text', text: attachmentBlock(fixed) }] }]);
+});
+
+test('readonly generation copies do not throw; the final mutable request can still be repaired', () => {
+    const { context, delivery } = fixture();
+    delivery.begin();
+    assert.doesNotThrow(() => delivery.intercept(Object.freeze([...context.chat])));
+    assert.equal(delivery.report().state, 'error');
+    const data = { type: 'normal', messages: asMessages(context.chat) };
+    delivery.verifyChat(data);
+    assert.equal(data.messages.at(-1).content, combined);
+    assert.equal(delivery.report().state, 'attached');
+});
+
+test('a reused generation array with a newly appended user message gets a fresh attachment', () => {
+    const { context, delivery } = fixture(), copy = [...context.chat];
+    delivery.begin(); delivery.intercept(copy);
+    copy.push({ is_user: true, mes: '下一条' });
+    delivery.intercept(copy);
+    assert.equal(copy.at(-1).mes, '下一条' + attachmentBlock(fixed));
+});
+
+test('fresh generations replace only a known previous attachment when reusing a generated object', () => {
+    const { context, delivery, update } = fixture(), copy = [...context.chat];
+    delivery.begin(); delivery.intercept(copy);
+    update({ text: '新的提示词' });
+    delivery.begin('regenerate');
+    delivery.intercept(copy, 'regenerate');
+    assert.equal(copy.at(-1).mes, base + attachmentBlock('新的提示词'));
+    assert.equal(context.chat.at(-1).mes, base);
+});
+
+test('one-character matching handles a long repeated preset without touching it', () => {
+    const { context, delivery } = fixture();
+    context.chat = [{ is_user: true, mes: '好' }];
+    const copy = [...context.chat];
+    delivery.begin(); delivery.intercept(copy);
+    const preset = { role: 'user', content: '好'.repeat(120000) };
+    const data = { type: 'normal', messages: [{ role: 'user', content: copy[0].mes }, preset] };
+    delivery.verifyChat(data);
+    assert.equal(data.messages[1], preset);
+    assert.equal(data.messages[0].content, '好' + attachmentBlock(fixed));
+});
+
+test('1500 mixed generations retain originals and attach exactly once per eligible request', () => {
+    const { context, delivery, update } = fixture();
+    const types = ['normal', 'regenerate', 'swipe', 'continue', 'quiet', 'impersonate'];
+    for (let round = 0; round < 1500; round++) {
+        const text = '固定文字 ' + round, enabled = round % 11 !== 0, type = types[round % types.length];
+        update({ text, enabled });
+        context.chat = [{ is_user: false, mes: '场景' }, { is_user: true, name: '旅人', mes: round % 3 ? '下一步 ' + round : '好' }];
+        const original = structuredClone(context.chat), copy = [...context.chat];
+        delivery.begin(type); delivery.intercept(copy, type);
+        // A second array wrapper must not cause a second append.
+        delivery.intercept([...copy], type);
+        const data = { type, messages: asMessages(copy) };
+        data.messages.push({ role: 'user', content: '请写好后续内容。' });
+        delivery.verifyChat(data); delivery.verifyChat(data);
+        const wire = JSON.parse(JSON.stringify(data));
+        const eligible = enabled && ['normal', 'regenerate', 'swipe', 'continue'].includes(type);
+        assert.equal(wire.messages[1].content, original[1].mes + (eligible ? attachmentBlock(text) : ''));
+        assert.equal(wire.messages[2].content, '请写好后续内容。');
+        assert.deepEqual(context.chat, original);
+        delivery.end();
+    }
 });

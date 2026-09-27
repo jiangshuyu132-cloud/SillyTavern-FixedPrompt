@@ -10,7 +10,7 @@ globalThis.jQuery = () => {};
 const plugin = await import('../index.js');
 let env;
 
-function fixture({ reduced = false, canvasAvailable = true, saved } = {}) {
+function fixture({ reduced = false, canvasAvailable = true, canvasThrows = false, maskThrows = false, saved } = {}) {
     const { window, document } = parseHTML('<html><body><div id="extensions_settings2"></div><main id="chat"><p>示例聊天</p></main></body></html>');
     let now = 0, frameId = 0, drawCount = 0, saves = 0, maskFrames = 0, latestMask = null;
     const canvasImages = new WeakMap();
@@ -41,10 +41,12 @@ function fixture({ reduced = false, canvasAvailable = true, saved } = {}) {
     window.innerWidth = 1280;
     window.innerHeight = 960;
     window.HTMLCanvasElement.prototype.getContext = function () {
+        if (canvasThrows) throw new Error('Canvas blocked');
         const canvas = this;
         return canvasAvailable ? { ...drawing, putImageData(data) { canvasImages.set(canvas, data); } } : null;
     };
     window.HTMLCanvasElement.prototype.toDataURL = function () {
+        if (maskThrows) throw new Error('Canvas export blocked');
         maskFrames++;
         const data = canvasImages.get(this).data;
         let transparent = 0, opaque = 0;
@@ -444,4 +446,50 @@ test('copy button copies the exact outgoing preview as text', async () => {
         if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
         else delete globalThis.navigator;
     }
+});
+
+test('a browser rejecting Canvas does not stop saved settings or prompt delivery', () => {
+    plugin.cleanup();
+    env = fixture({ canvasThrows: true });
+    env.click('.handle');
+    assert.equal(env.q('.square').inert, false);
+    env.change('text', '新的固定文字');
+    const events = env.context.eventSource;
+    events.emit('generate', 'normal', {}, false);
+    const copy = [...env.context.chat];
+    globalThis.sillytavernFixedPromptInterceptor(copy, 8192, null, 'normal');
+    const data = { type: 'normal', messages: [{ role: 'user', content: copy[0].mes }] };
+    events.emit('request', data);
+    assert.equal(data.messages[0].content, '带我去城门。\n\n【固定提示词】\n新的固定文字');
+    assert.equal(env.saves, 1);
+    env.click('.collapse');
+    assert.equal(env.q('.viewport').dataset.visible, 'false');
+});
+
+test('mask export failure closes the panel without leaving an inert visible layer', () => {
+    plugin.cleanup();
+    env = fixture({ maskThrows: true });
+    env.click('.handle'); env.advance(4500); env.click('.collapse'); env.advance(30);
+    assert.equal(env.q('.viewport').dataset.visible, 'false');
+    assert.equal(env.frames.size, 0);
+    assert.equal(env.q('.shell').style.getPropertyValue('mask-image') || '', '');
+    env.click('.handle'); env.advance(4500);
+    assert.equal(env.q('.square').inert, false);
+});
+
+test('text completion verification runs after later payload editors', () => {
+    env.context.mainApi = 'textgenerationwebui';
+    env.change('text', '固定文字');
+    const events = env.context.eventSource;
+    const editor = data => { data.prompt = 'User: 带我去城门。\nAssistant:'; };
+    events.on('data', editor);
+    events.emit('generate', 'normal', {}, false);
+    const copy = [...env.context.chat];
+    globalThis.sillytavernFixedPromptInterceptor(copy, 8192, null, 'normal');
+    const data = { prompt: 'User: ' + copy[0].mes + '\nAssistant:' };
+    events.emit('data', data, false); events.emit('ended');
+    assert.match(env.q('[data-status]').textContent, /未核验/);
+    assert.equal(data.prompt, 'User: 带我去城门。\nAssistant:');
+    plugin.cleanup();
+    assert.equal(events.listenerCount('data'), 1);
 });

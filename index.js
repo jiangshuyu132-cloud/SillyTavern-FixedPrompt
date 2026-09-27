@@ -28,10 +28,12 @@ export function init() {
     subscribe(ctx, 'GENERATION_AFTER_COMMANDS', (type, _options, dryRun) => {
         controller.clearLegacyPrompt();
         controller.delivery.begin(type, dryRun);
-        const requestEvent = ctx.eventTypes.CHAT_COMPLETION_SETTINGS_READY;
         // Reorder before emission so extensions loaded after us prepare their payload first.
-        if (requestEvent && typeof ctx.eventSource.makeLast === 'function') {
-            ctx.eventSource.makeLast(requestEvent, verifyRequest);
+        for (const [key, handler] of [['CHAT_COMPLETION_SETTINGS_READY', verifyRequest], ['GENERATE_AFTER_DATA', verifyText]]) {
+            const event = ctx.eventTypes[key];
+            if (event && typeof ctx.eventSource.makeLast === 'function') {
+                ctx.eventSource.makeLast(event, handler);
+            }
         }
     });
     subscribe(ctx, 'CHAT_COMPLETION_SETTINGS_READY', verifyRequest);

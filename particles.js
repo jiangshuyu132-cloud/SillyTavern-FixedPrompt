@@ -12,7 +12,9 @@ export function createParticlePanel(root) {
     const handle = q('.handle');
     const viewport = q('.viewport');
     const canvas = q('canvas');
-    const ctx = canvas.getContext('2d');
+    let ctx = null;
+    try { ctx = canvas.getContext('2d'); }
+    catch { /* Privacy settings may reject Canvas. Keep the panel and delivery usable. */ }
     const motion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
     const reduced = () => !ctx || motion?.matches;
     let mode = 'closed', advanced = false, raf = 0, start = 0, last = 0;

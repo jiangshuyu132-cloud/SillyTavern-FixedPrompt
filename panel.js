@@ -25,7 +25,7 @@ export function mountPanel(controller) {
                     <button class="advanced-toggle" type="button" aria-expanded="false" aria-controls="square-prompt-advanced"><span>高级设置</span><span class="toggle-side"><span class="toggle-label">展开</span>${chevron('down')}</span></button>
                 </section>
                 <section class="advanced" id="square-prompt-advanced" inert aria-hidden="true"><div class="advanced-inner">
-                    <label class="field" for="square-prompt-preview"><b>本次发送内容 · v1.2.1</b></label>
+                    <label class="field" for="square-prompt-preview"><b>本次发送内容 · v1.2.2</b></label>
                     <p class="help" data-check-summary></p>
                     <p class="help" data-check-detail></p>
                     <textarea id="square-prompt-preview" class="preview" data-preview readonly placeholder="发送一条消息后，这里会显示本次用户消息＋固定提示词。"></textarea>
