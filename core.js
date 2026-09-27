@@ -15,7 +15,7 @@ export function normalizeSettings(value) {
         enabled: typeof raw.enabled === 'boolean' ? raw.enabled : DEFAULT_SETTINGS.enabled,
         text: typeof raw.text === 'string' ? raw.text : '',
         depth: Number.isFinite(depth) ? Math.min(100, Math.max(0, Math.trunc(depth))) : 0,
-        role: [0, 1].includes(role) ? role : 0,
+        role: [0, 1, 2].includes(role) ? role : 0,
     };
 }
 
@@ -42,7 +42,7 @@ export function createController(getContext) {
         if (!ctx?.setExtensionPrompt) return '';
         const value = settings();
         const prompt = promptForGeneration(value, currentType);
-        // IN_CHAT = 1; SYSTEM = 0; USER = 1. scan=false avoids world-info triggers.
+        // IN_CHAT = 1; SYSTEM = 0; USER = 1; ASSISTANT = 2. No world-info scan.
         ctx.setExtensionPrompt(PROMPT_KEY, prompt, 1, value.depth, false, value.role);
         return prompt;
     }

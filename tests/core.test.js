@@ -26,7 +26,7 @@ test('first installation has an empty prompt and safe defaults', () => {
 });
 
 test('invalid stored values cannot send objects, invalid roles or unbounded depths', () => {
-    assert.deepEqual(normalizeSettings({ text: {}, enabled: 'false', depth: Infinity, role: 2 }),
+    assert.deepEqual(normalizeSettings({ text: {}, enabled: 'false', depth: Infinity, role: 3 }),
         { enabled: true, text: '', depth: 0, role: 0 });
     assert.equal(normalizeSettings({ depth: -50 }).depth, 0);
     assert.equal(normalizeSettings({ depth: 1000 }).depth, 100);
